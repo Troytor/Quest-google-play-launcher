@@ -13,109 +13,199 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
-import dalvik.system.DexClassLoader
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
 class GmsDaemonService : Service() {
 
-    private var virtualGmsLoader: DexClassLoader? = null
-    private var virtualVendingLoader: DexClassLoader? = null
+    companion object {
+        // Common Polytopia Tribe SKUs so you can 1-click sync them in the Vault or auto-detect them
+        val POLYTOPIA_TRIBE_SKUS = listOf(
+            "kickoo", "hoodrick", "luxidoor", "vengir", "zebasi",
+            "ai-mo", "aimo", "quali", "quetzali", "yadakk",
+            "aquarion", "elyrion", "polaris", "cymanti",
+            "tribe_kickoo", "tribe_hoodrick", "tribe_luxidoor", "tribe_vengir",
+            "tribe_zebasi", "tribe_aimo", "tribe_quetzali", "tribe_yadakk",
+            "tribe_aquarion", "tribe_elyrion", "tribe_polaris", "tribe_cymanti"
+        )
+    }
 
-    /**
-     * Full AIDL Binder stub for com.android.vending.billing.IInAppBillingService (Transactions 1..9)
-     * and com.android.vending.licensing.ILicensingService.
-     */
-    private val billingAndGmsBinder = object : Binder() {
+    private val billingAndLvlBinder = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-            val descriptor = "com.android.vending.billing.IInAppBillingService"
+            if (code == INTERFACE_TRANSACTION) {
+                reply?.writeString("com.android.vending.billing.IInAppBillingService")
+                return true
+            }
+
             return try {
+                // Peek interface descriptor safely
+                data.setDataPosition(0)
+                val descriptor = try {
+                    data.readInterfaceToken()
+                } catch (_: Throwable) {
+                    "com.android.vending.billing.IInAppBillingService"
+                }
+
+                // Handle Google Play LVL (ILicensingService.checkLicense)
+                if (descriptor.contains("ILicensingService")) {
+                    reply?.writeNoException()
+                    return true
+                }
+
                 when (code) {
                     // 1: isBillingSupported(int apiVersion, String packageName, String type)
                     1 -> {
-                        data.enforceInterface(descriptor)
+                        val apiVersion = data.readInt()
+                        val pkg = data.readString() ?: ""
+                        val type = data.readString() ?: "inapp"
+                        Log.i(BridgeApp.TAG, "Billing isBillingSupported(v=$apiVersion, pkg=$pkg, type=$type) -> OK")
                         reply?.writeNoException()
                         reply?.writeInt(0) // BILLING_RESPONSE_RESULT_OK
                         true
                     }
+
                     // 2: getSkuDetails(int apiVersion, String packageName, String type, Bundle skusBundle)
                     2 -> {
-                        data.enforceInterface(descriptor)
                         val apiVersion = data.readInt()
-                        val callingPkg = data.readString() ?: ""
+                        val pkg = data.readString() ?: ""
                         val type = data.readString() ?: "inapp"
                         val skusBundle = if (data.readInt() != 0) Bundle.CREATOR.createFromParcel(data) else Bundle()
                         val skuList = skusBundle.getStringArrayList("ITEM_ID_LIST") ?: arrayListOf()
+                        Log.i(BridgeApp.TAG, "Billing getSkuDetails(v=$apiVersion, pkg=$pkg, count=${skuList.size})")
 
-                        val response = buildSkuDetailsBundle(callingPkg, type, skuList)
+                        val response = buildSkuDetailsBundle(pkg, type, skuList)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         response.writeToParcel(reply!!, 0)
                         true
                     }
+
                     // 3: getBuyIntent(int apiVersion, String packageName, String sku, String type, String developerPayload)
                     3 -> {
-                        data.enforceInterface(descriptor)
                         val apiVersion = data.readInt()
-                        val callingPkg = data.readString() ?: ""
+                        val pkg = data.readString() ?: ""
                         val sku = data.readString() ?: ""
-                        Log.i(BridgeApp.TAG, "IAP getBuyIntent($callingPkg, sku=$sku, v=$apiVersion)")
+                        val type = data.readString() ?: "inapp"
+                        val devPayload = data.readString() ?: ""
+                        Log.i(BridgeApp.TAG, "Billing getBuyIntent(v=$apiVersion, pkg=$pkg, sku=$sku)")
 
-                        val buyBundle = Bundle().apply {
-                            putInt("RESPONSE_CODE", 0)
-                            val launchIntent = Intent(this@GmsDaemonService, MainActivity::class.java).apply {
-                                putExtra("OPEN_TAB", "IAP_VAULT")
-                                putExtra("REQUESTED_PKG", callingPkg)
-                                putExtra("REQUESTED_SKU", sku)
-                            }
-                            val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                            } else {
-                                PendingIntent.FLAG_UPDATE_CURRENT
-                            }
-                            putParcelable("BUY_INTENT", PendingIntent.getActivity(this@GmsDaemonService, 0, launchIntent, piFlags))
-                        }
+                        val buyBundle = createBuyIntentBundle(pkg, sku, type, devPayload)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         buyBundle.writeToParcel(reply!!, 0)
                         true
                     }
+
                     // 4: getPurchases(int apiVersion, String packageName, String type, String continuationToken)
                     4 -> {
-                        data.enforceInterface(descriptor)
                         val apiVersion = data.readInt()
-                        val callingPkg = data.readString() ?: ""
-                        val itemType = data.readString() ?: "inapp"
-                        Log.i(BridgeApp.TAG, "IAP getPurchases($callingPkg, type=$itemType, v=$apiVersion)")
+                        val pkg = data.readString() ?: ""
+                        val type = data.readString() ?: "inapp"
+                        Log.i(BridgeApp.TAG, "Billing getPurchases(v=$apiVersion, pkg=$pkg, type=$type)")
 
-                        val resultBundle = querySyncedAccountPurchases(callingPkg)
+                        val resultBundle = querySyncedAccountPurchases(pkg)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         resultBundle.writeToParcel(reply!!, 0)
                         true
                     }
+
                     // 5: consumePurchase(int apiVersion, String packageName, String purchaseToken)
                     5 -> {
-                        data.enforceInterface(descriptor)
                         reply?.writeNoException()
                         reply?.writeInt(0) // RESULT_OK
                         true
                     }
-                    // 6: getPurchaseHistory(int apiVersion, String packageName, String type, String continuationToken, Bundle extraParams)
-                    6, 7, 8, 9 -> {
-                        data.enforceInterface(descriptor)
+
+                    // 6: getBuyIntentToReplaceSkus OR getPurchaseHistory OR getBuyIntentExtraParams
+                    // 8: getBuyIntentExtraParams(int apiVersion, String packageName, String sku, String type, String developerPayload, Bundle extraParams)
+                    6, 8 -> {
                         val apiVersion = data.readInt()
-                        val callingPkg = data.readString() ?: ""
-                        val resultBundle = querySyncedAccountPurchases(callingPkg)
+                        val pkg = data.readString() ?: ""
+                        val thirdArg = data.readString() ?: ""
+                        val fourthArg = data.readString() ?: "inapp"
+
+                        // Distinguish getPurchaseHistory (where 3rd arg is "inapp" or "subs") from getBuyIntentExtraParams (where 3rd arg is the SKU!)
+                        if (thirdArg == "inapp" || thirdArg == "subs") {
+                            Log.i(BridgeApp.TAG, "Billing getPurchaseHistory(v=$apiVersion, pkg=$pkg, type=$thirdArg)")
+                            val resultBundle = querySyncedAccountPurchases(pkg)
+                            reply?.writeNoException()
+                            reply?.writeInt(1)
+                            resultBundle.writeToParcel(reply!!, 0)
+                        } else {
+                            val devPayload = try { data.readString() ?: "" } catch (_: Throwable) { "" }
+                            Log.i(BridgeApp.TAG, "Billing getBuyIntentExtraParams(v=$apiVersion, pkg=$pkg, sku=$thirdArg)")
+                            val buyBundle = createBuyIntentBundle(pkg, thirdArg, fourthArg, devPayload)
+                            reply?.writeNoException()
+                            reply?.writeInt(1)
+                            buyBundle.writeToParcel(reply!!, 0)
+                        }
+                        true
+                    }
+
+                    // 7: isBillingSupportedExtraParams(int apiVersion, String packageName, String type, Bundle extraParams)
+                    7 -> {
+                        val apiVersion = data.readInt()
+                        val pkg = data.readString() ?: ""
+                        val type = data.readString() ?: "inapp"
+                        Log.i(BridgeApp.TAG, "Billing isBillingSupportedExtraParams(v=$apiVersion, pkg=$pkg, type=$type) -> OK")
+                        reply?.writeNoException()
+                        reply?.writeInt(0) // BILLING_RESPONSE_RESULT_OK
+                        true
+                    }
+
+                    // 9: getPurchasesExtraParams(int apiVersion, String packageName, String type, String continuationToken, Bundle extraParams)
+                    // 11: getPurchaseHistoryExtraParams
+                    9, 11 -> {
+                        val apiVersion = data.readInt()
+                        val pkg = data.readString() ?: ""
+                        val type = data.readString() ?: "inapp"
+                        Log.i(BridgeApp.TAG, "Billing getPurchasesExtraParams(v=$apiVersion, pkg=$pkg, type=$type)")
+
+                        val resultBundle = querySyncedAccountPurchases(pkg)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         resultBundle.writeToParcel(reply!!, 0)
                         true
                     }
-                    else -> super.onTransact(code, data, reply, flags)
+
+                    // 10: getSkuDetailsExtraParams(int apiVersion, String packageName, String type, Bundle skusBundle, Bundle extraParams)
+                    // 17, 18, 19, 20: Billing v5/v6/v7 queryProductDetails / getSkuDetailsExtraParams
+                    10, 17, 18, 19, 20 -> {
+                        val apiVersion = data.readInt()
+                        val pkg = data.readString() ?: ""
+                        val type = data.readString() ?: "inapp"
+                        val skusBundle = if (data.dataAvail() > 0 && data.readInt() != 0) {
+                            Bundle.CREATOR.createFromParcel(data)
+                        } else {
+                            Bundle()
+                        }
+                        val skuList = skusBundle.getStringArrayList("ITEM_ID_LIST") ?: arrayListOf()
+                        Log.i(BridgeApp.TAG, "Billing getSkuDetailsExtraParams(code=$code, v=$apiVersion, pkg=$pkg, skus=$skuList)")
+
+                        val response = buildSkuDetailsBundle(pkg, type, skuList)
+                        reply?.writeNoException()
+                        reply?.writeInt(1)
+                        response.writeToParcel(reply!!, 0)
+                        true
+                    }
+
+                    // 901, 902, 12, 13, 14, 15, 16: acknowledgePurchase / billing config queries
+                    else -> {
+                        Log.d(BridgeApp.TAG, "Billing generic OK response for transaction code=$code")
+                        val okBundle = Bundle().apply {
+                            putInt("RESPONSE_CODE", 0)
+                            putString("BILLING_CONFIG", "{\"countryCode\":\"US\"}")
+                        }
+                        reply?.writeNoException()
+                        reply?.writeInt(1)
+                        okBundle.writeToParcel(reply!!, 0)
+                        true
+                    }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                Log.e(BridgeApp.TAG, "Billing onTransact error on code=$code", e)
                 super.onTransact(code, data, reply, flags)
             }
         }
@@ -129,40 +219,62 @@ class GmsDaemonService : Service() {
 
     private fun initVirtualGmsDependencies() {
         val gmsDir = File(filesDir, "virtual_gms").apply { mkdirs() }
-        val odexDir = File(codeCacheDir, "gms_odex").apply { mkdirs() }
-
-        // Ensure default account_purchases.json exists for Google Account IAP Receipt Sync
         val syncFile = File(gmsDir, "account_purchases.json")
         if (!syncFile.exists()) {
             syncFile.writeText("{}")
         }
+    }
 
-        val gmsApk = File(gmsDir, "GmsCore.apk")
-        if (gmsApk.exists()) {
-            gmsApk.setReadOnly()
-            virtualGmsLoader = DexClassLoader(gmsApk.absolutePath, odexDir.absolutePath, null, classLoader)
-            Log.i(BridgeApp.TAG, "Mounted virtual GmsCore.apk in :gms_daemon")
+    private fun createBuyIntentBundle(pkg: String, sku: String, type: String, devPayload: String): Bundle {
+        val sheetIntent = Intent(this, BillingPurchaseSheetActivity::class.java).apply {
+            putExtra("REQUESTED_PKG", pkg)
+            putExtra("REQUESTED_SKU", sku)
+            putExtra("ITEM_TYPE", type)
+            putExtra("DEV_PAYLOAD", devPayload)
         }
-
-        val phoneskyApk = File(gmsDir, "Phonesky.apk")
-        if (phoneskyApk.exists()) {
-            phoneskyApk.setReadOnly()
-            virtualVendingLoader = DexClassLoader(phoneskyApk.absolutePath, odexDir.absolutePath, null, classLoader)
-            Log.i(BridgeApp.TAG, "Mounted virtual Phonesky.apk in :gms_daemon")
+        val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            sku.hashCode(),
+            sheetIntent,
+            piFlags
+        )
+        return Bundle().apply {
+            putInt("RESPONSE_CODE", 0) // BILLING_RESPONSE_RESULT_OK
+            putParcelable("BUY_INTENT", pendingIntent)
         }
     }
 
     private fun buildSkuDetailsBundle(pkg: String, type: String, skus: List<String>): Bundle {
+        // Also auto-record any queried SKUs into discovered_skus.json so the user can see what SKUs Polytopia asked for!
+        recordDiscoveredSkus(pkg, skus)
+
         val detailsList = ArrayList<String>()
         for (sku in skus) {
+            val cleanTitle = sku.replaceFirstChar { it.uppercase() }
             val json = JSONObject().apply {
                 put("productId", sku)
                 put("type", type)
-                put("price", "$0.00 (Google Account Synced)")
-                put("price_amount_micros", 0)
+                put("price", "$0.99")
+                put("price_amount_micros", 990000L)
                 put("price_currency_code", "USD")
-                put("title", "Synced Entitlement ($sku)")
-                put("description", "Google Play Account Synced Item for $pkg")
+                put("title", cleanTitle)
+                put("name", cleanTitle)
+                put("description", "Google Play Synced Item ($sku)")
+                put("skuDetailsToken", "AEuhp4I_${sku}_token")
+                // Billing v5/v6/v7 ProductDetails format support
+                put("oneTimePurchaseOfferDetails", JSONObject().apply {
+                    put("formattedPrice", "$0.99")
+                    put("priceAmountMicros", 990000L)
+                    put("priceCurrencyCode", "USD")
+                    put("offerToken", "offer_token_$sku")
+                })
             }
             detailsList.add(json.toString())
         }
@@ -170,6 +282,22 @@ class GmsDaemonService : Service() {
             putInt("RESPONSE_CODE", 0)
             putStringArrayList("DETAILS_LIST", detailsList)
         }
+    }
+
+    private fun recordDiscoveredSkus(pkg: String, skus: List<String>) {
+        if (pkg.isBlank() || skus.isEmpty()) return
+        try {
+            val file = File(filesDir, "virtual_gms/discovered_skus.json")
+            val root = if (file.exists()) JSONObject(file.readText()) else JSONObject()
+            val existing = root.optJSONArray(pkg) ?: JSONArray()
+            val set = mutableSetOf<String>()
+            for (i in 0 until existing.length()) set.add(existing.getString(i))
+            skus.forEach { set.add(it) }
+            val updated = JSONArray()
+            set.forEach { updated.put(it) }
+            root.put(pkg, updated)
+            file.writeText(root.toString(2))
+        } catch (_: Throwable) {}
     }
 
     private fun querySyncedAccountPurchases(packageName: String): Bundle {
@@ -189,19 +317,22 @@ class GmsDaemonService : Service() {
                     for (i in 0 until pkgPurchases.length()) {
                         val entry = pkgPurchases.getJSONObject(i)
                         val sku = entry.optString("productId")
+                        val now = entry.optLong("purchaseTime", System.currentTimeMillis() - 86400000L)
+                        val token = entry.optString("purchaseToken", "quest3_gms_token_${packageName}_${sku}")
                         val purchaseJson = JSONObject().apply {
                             put("orderId", entry.optString("orderId", "GPA.3391-8842-9910-QUEST3"))
                             put("packageName", packageName)
                             put("productId", sku)
-                            put("purchaseTime", entry.optLong("purchaseTime", System.currentTimeMillis() - 86400000L))
+                            put("purchaseTime", now)
                             put("purchaseState", 0) // 0 = Purchased
-                            put("purchaseToken", entry.optString("purchaseToken", "synced_google_account_token_$sku"))
+                            put("purchaseToken", token)
+                            put("quantity", 1)
                             put("acknowledged", true)
-                            put("autoRenewing", true)
+                            put("autoRenewing", false)
                         }
                         itemList.add(sku)
                         dataList.add(purchaseJson.toString())
-                        sigList.add(entry.optString("signature", "GooglePlaySyncedAccountSignature"))
+                        sigList.add(entry.optString("signature", "GooglePlaySyncedSignature_${sku.hashCode()}"))
                     }
                 }
             } catch (e: Exception) {
@@ -216,8 +347,8 @@ class GmsDaemonService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder {
-        Log.d(BridgeApp.TAG, "GmsDaemonService bound: ${intent?.action}")
-        return billingAndGmsBinder
+        Log.i(BridgeApp.TAG, "Client bound to GmsDaemonService (com.android.vending): action=${intent?.action}")
+        return billingAndLvlBinder
     }
 
     private fun startLightweightForeground() {
@@ -225,7 +356,7 @@ class GmsDaemonService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
-                "SpatialGMS OS 27 Dependency Engine",
+                "SpatialGMS OS 27 Play Store Host",
                 NotificationManager.IMPORTANCE_LOW
             )
             (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
@@ -233,8 +364,8 @@ class GmsDaemonService : Service() {
         }
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)
-                .setContentTitle("SpatialGMS OS 27 Engine")
-                .setContentText("Google Play Services & IAP Router Active in Low-Power Sandbox")
+                .setContentTitle("SpatialGMS Play Store Host Active")
+                .setContentText("Serving com.android.vending In-App Billing & Account Sync")
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .build()
         } else {

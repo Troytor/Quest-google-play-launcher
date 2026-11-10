@@ -1,6 +1,7 @@
 package com.cukies.questgmsbridge
 
 import android.app.Activity
+import android.content.Intent
 import android.content.res.AssetManager
 import android.content.res.Resources
 import android.graphics.Color
@@ -25,7 +26,6 @@ class ProxySandboxActivity : Activity() {
 
         super.onCreate(savedInstanceState)
 
-        // Fallback spatial diagnostic HUD if the guest activity uses a custom native surface or hybrid intent
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -41,7 +41,7 @@ class ProxySandboxActivity : Activity() {
         }
 
         val title = TextView(this).apply {
-            text = "Mounted: ${ guestPkg ?: "Unknown" }"
+            text = "Mounted: ${guestPkg ?: "Unknown"}"
             textSize = 22f
             setTextColor(Color.WHITE)
             setPadding(0, 16, 0, 12)

@@ -8,13 +8,11 @@ android {
     compileSdk 34
 
     defaultConfig {
-        // Claiming com.android.vending on Quest 3 allows ALL unmodified apps (like Polytopia)
-        // to bind directly to our GmsDaemonService for Play Billing & LVL checks!
-        applicationId "com.android.vending"
+        applicationId "com.cukies.questgmsbridge"
         minSdk 29
         targetSdk 34
-        versionCode 3
-        versionName "3.0-iOS27-VendingHost"
+        versionCode 4
+        versionName "4.0-iOS27-ADB-VM"
 
         ndk {
             abiFilters "arm64-v8a"
@@ -50,6 +48,8 @@ android {
         }
         resources {
             excludes.add('/META-INF/{AL2.0,LGPL2.1}')
+            excludes.add('META-INF/DEPENDENCIES')
+            excludes.add('META-INF/INDEX.LIST')
         }
     }
 }
@@ -69,5 +69,10 @@ dependencies {
     implementation 'androidx.compose.material:material-icons-extended'
 
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+
+    // Pure Kotlin ADB Client (Used to connect to 127.0.0.1:5555 like Quest Games Optimizer)
+    implementation 'dev.mobile:dadb:1.2.8'
+
+    // Hidden API Reflection Unlock for Quest 3 Horizon OS
     implementation 'com.github.tiann:FreeReflection:3.2.0'
 }

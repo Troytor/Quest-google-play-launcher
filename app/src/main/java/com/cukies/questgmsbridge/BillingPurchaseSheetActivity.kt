@@ -36,10 +36,11 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
 
         val callingPkg = intent.getStringExtra("REQUESTED_PKG")
             ?: callingPackage
-            ?: "air.com.midjiwan.polytopia"
-        val requestedSku = intent.getStringExtra("REQUESTED_SKU") ?: "unknown_sku"
+            ?: "unknown.package"
+        val requestedSku = intent.getStringExtra("REQUESTED_SKU") ?: "item_entitlement"
         val itemType = intent.getStringExtra("ITEM_TYPE") ?: "inapp"
         val devPayload = intent.getStringExtra("DEV_PAYLOAD") ?: ""
+        val activeAccount = intent.getStringExtra("GOOGLE_ACCOUNT") ?: "Google Play Account"
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -84,7 +85,7 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "GOOGLE PLAY BILLING BRIDGE • OS 27",
+                                        text = "GOOGLE PLAY BILLING • $activeAccount",
                                         color = Color(0xFF64D2FF),
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold
@@ -115,7 +116,7 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
                                 Spacer(modifier = Modifier.width(14.dp))
                                 Column {
                                     Text(
-                                        text = "Entitlement / Purchase Request",
+                                        text = "Google Play Entitlement Verification",
                                         color = Color.White,
                                         fontSize = 20.sp,
                                         fontWeight = FontWeight.Bold
@@ -138,9 +139,9 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
                                     .background(Color.Black.copy(alpha = 0.35f))
                                     .padding(16.dp)
                             ) {
-                                SheetRow("Requested SKU / Tribe ID", requestedSku)
+                                SheetRow("Product SKU ID", requestedSku)
                                 SheetRow("Entitlement Type", itemType.uppercase())
-                                SheetRow("Account Sync Mode", "Google Play Services Bridge")
+                                SheetRow("Google Account", activeAccount)
                             }
 
                             Spacer(modifier = Modifier.height(22.dp))
@@ -177,7 +178,7 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
                                     Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color.Black)
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        "Sync & Unlock Now",
+                                        "Authorize & Sync",
                                         color = Color.Black,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -192,7 +193,7 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
 
     private fun completeAndDeliverPurchase(pkg: String, sku: String, devPayload: String) {
         val now = System.currentTimeMillis()
-        val token = "quest3_gms_token_${pkg}_${sku}"
+        val token = "gms_account_sync_${pkg}_${sku}"
         val orderId = "GPA.3391-8842-9910-${now % 100000}"
 
         val purchaseJson = JSONObject().apply {
@@ -200,7 +201,7 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
             put("packageName", pkg)
             put("productId", sku)
             put("purchaseTime", now)
-            put("purchaseState", 0) // 0 == PURCHASED
+            put("purchaseState", 0)
             put("developerPayload", devPayload)
             put("purchaseToken", token)
             put("quantity", 1)
@@ -209,7 +210,6 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
         }
         val signature = "GooglePlaySyncedSignature_${sku.hashCode()}"
 
-        // 1. Persist to account_purchases.json so future getPurchases() calls restore it automatically!
         try {
             val gmsDir = File(filesDir, "virtual_gms").apply { mkdirs() }
             val file = File(gmsDir, "account_purchases.json")
@@ -239,9 +239,8 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
             }
         } catch (_: Throwable) {}
 
-        // 2. Build the official Google Play Billing result Intent
         val resultIntent = Intent().apply {
-            putExtra("RESPONSE_CODE", 0) // BILLING_RESPONSE_RESULT_OK
+            putExtra("RESPONSE_CODE", 0)
             putExtra("INAPP_PURCHASE_DATA", purchaseJson.toString())
             putExtra("INAPP_DATA_SIGNATURE", signature)
             putStringArrayListExtra("INAPP_PURCHASE_ITEM_LIST", arrayListOf(sku))
@@ -249,7 +248,6 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
             putStringArrayListExtra("INAPP_DATA_SIGNATURE_LIST", arrayListOf(signature))
         }
 
-        // 3. Also broadcast com.android.vending.billing.PURCHASES_UPDATED for Billing Library v5/v6/v7 listeners!
         try {
             val broadcast = Intent("com.android.vending.billing.PURCHASES_UPDATED").apply {
                 setPackage(pkg)
@@ -264,7 +262,7 @@ class BillingPurchaseSheetActivity : ComponentActivity() {
 
     private fun cancelPurchase() {
         val cancelIntent = Intent().apply {
-            putExtra("RESPONSE_CODE", 1) // BILLING_RESPONSE_RESULT_USER_CANCELED
+            putExtra("RESPONSE_CODE", 1)
         }
         setResult(Activity.RESULT_CANCELED, cancelIntent)
         finish()

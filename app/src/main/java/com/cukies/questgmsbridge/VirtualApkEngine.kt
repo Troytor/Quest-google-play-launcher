@@ -47,7 +47,6 @@ object VirtualApkEngine {
             }
             stagedBaseApk.setReadOnly()
 
-            // Check if the installed app on Quest 3 has Split APKs (e.g. split_config.arm64_v8a.apk)
             val stagedSplits = mutableListOf<String>()
             try {
                 val appInfo = hostContext.packageManager.getApplicationInfo(pkgName, 0)
@@ -98,7 +97,6 @@ object VirtualApkEngine {
                 PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES
             )
 
-            // Resolve launcher entry activity
             val launchIntent = hostContext.packageManager.getLaunchIntentForPackage(pkgName)
             val entryActivity = launchIntent?.component?.className
                 ?: pkgInfo?.activities?.firstOrNull()?.name
@@ -119,9 +117,6 @@ object VirtualApkEngine {
         }
     }
 
-    /**
-     * Unpacks lib/arm64-v8a/*.so files from the APK and any split APKs into the sandbox native library folder.
-     */
     private fun extractNativeSoLibraries(apkFile: File, targetLibDir: File) {
         try {
             ZipFile(apkFile).use { zip ->

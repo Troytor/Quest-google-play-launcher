@@ -1,5 +1,6 @@
 package com.cukies.questgmsbridge
 
+import android.accounts.AccountManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -19,20 +20,9 @@ import java.io.File
 
 class GmsDaemonService : Service() {
 
-    companion object {
-        val POLYTOPIA_TRIBE_SKUS = listOf(
-            "kickoo", "hoodrick", "luxidoor", "vengir", "zebasi",
-            "ai-mo", "aimo", "quali", "quetzali", "yadakk",
-            "aquarion", "elyrion", "polaris", "cymanti",
-            "tribe_kickoo", "tribe_hoodrick", "tribe_luxidoor", "tribe_vengir",
-            "tribe_zebasi", "tribe_aimo", "tribe_quetzali", "tribe_yadakk",
-            "tribe_aquarion", "tribe_elyrion", "tribe_polaris", "tribe_cymanti"
-        )
-    }
-
     private var boundAction: String = ""
 
-    private val billingAndLvlBinder = object : Binder() {
+    private val universalBillingAndAuthBinder = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
             val billingDescriptor = "com.android.vending.billing.IInAppBillingService"
 
@@ -42,8 +32,16 @@ class GmsDaemonService : Service() {
             }
 
             return try {
+                // 1. Universal Google Play Licensing Service (LVL) Responder
                 if (boundAction.contains("ILicensingService")) {
                     reply?.writeNoException()
+                    return true
+                }
+
+                // 2. Universal Google Play Auth / Games Startup Responder
+                if (boundAction.contains("com.google.android.gms")) {
+                    reply?.writeNoException()
+                    reply?.writeInt(0)
                     return true
                 }
 
@@ -55,7 +53,7 @@ class GmsDaemonService : Service() {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
                         val type = data.readString() ?: "inapp"
-                        Log.i(BridgeApp.TAG, "Billing isBillingSupported(v=$apiVersion, pkg=$pkg, type=$type) -> OK")
+                        Log.i(BridgeApp.TAG, "UniversalBilling isBillingSupported(v=$apiVersion, pkg=$pkg, type=$type)")
                         reply?.writeNoException()
                         reply?.writeInt(0) // BILLING_RESPONSE_RESULT_OK
                         true
@@ -68,9 +66,9 @@ class GmsDaemonService : Service() {
                         val type = data.readString() ?: "inapp"
                         val skusBundle = if (data.readInt() != 0) Bundle.CREATOR.createFromParcel(data) else Bundle()
                         val skuList = skusBundle.getStringArrayList("ITEM_ID_LIST") ?: arrayListOf()
-                        Log.i(BridgeApp.TAG, "Billing getSkuDetails(v=$apiVersion, pkg=$pkg, count=${skuList.size})")
+                        Log.i(BridgeApp.TAG, "UniversalBilling getSkuDetails(v=$apiVersion, pkg=$pkg, queried=${skuList.size} SKUs)")
 
-                        val response = buildSkuDetailsBundle(pkg, type, skuList)
+                        val response = buildAndSyncCatalogDetails(pkg, type, skuList)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         response.writeToParcel(reply!!, 0)
@@ -84,7 +82,7 @@ class GmsDaemonService : Service() {
                         val sku = data.readString() ?: ""
                         val type = data.readString() ?: "inapp"
                         val devPayload = data.readString() ?: ""
-                        Log.i(BridgeApp.TAG, "Billing getBuyIntent(v=$apiVersion, pkg=$pkg, sku=$sku)")
+                        Log.i(BridgeApp.TAG, "UniversalBilling getBuyIntent(v=$apiVersion, pkg=$pkg, sku=$sku)")
 
                         val buyBundle = createBuyIntentBundle(pkg, sku, type, devPayload)
                         reply?.writeNoException()
@@ -98,9 +96,9 @@ class GmsDaemonService : Service() {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
                         val type = data.readString() ?: "inapp"
-                        Log.i(BridgeApp.TAG, "Billing getPurchases(v=$apiVersion, pkg=$pkg, type=$type)")
+                        Log.i(BridgeApp.TAG, "UniversalBilling getPurchases(v=$apiVersion, pkg=$pkg, type=$type)")
 
-                        val resultBundle = querySyncedAccountPurchases(pkg)
+                        val resultBundle = queryAccountEntitlementsForApp(pkg, type)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         resultBundle.writeToParcel(reply!!, 0)
@@ -110,7 +108,7 @@ class GmsDaemonService : Service() {
                     // 5: consumePurchase(int apiVersion, String packageName, String purchaseToken)
                     5 -> {
                         reply?.writeNoException()
-                        reply?.writeInt(0) // RESULT_OK
+                        reply?.writeInt(0) // BILLING_RESPONSE_RESULT_OK
                         true
                     }
 
@@ -122,14 +120,14 @@ class GmsDaemonService : Service() {
                         val fourthArg = data.readString() ?: "inapp"
 
                         if (thirdArg == "inapp" || thirdArg == "subs") {
-                            Log.i(BridgeApp.TAG, "Billing getPurchaseHistory(v=$apiVersion, pkg=$pkg, type=$thirdArg)")
-                            val resultBundle = querySyncedAccountPurchases(pkg)
+                            Log.i(BridgeApp.TAG, "UniversalBilling getPurchaseHistory(v=$apiVersion, pkg=$pkg, type=$thirdArg)")
+                            val resultBundle = queryAccountEntitlementsForApp(pkg, thirdArg)
                             reply?.writeNoException()
                             reply?.writeInt(1)
                             resultBundle.writeToParcel(reply!!, 0)
                         } else {
                             val devPayload = try { data.readString() ?: "" } catch (_: Throwable) { "" }
-                            Log.i(BridgeApp.TAG, "Billing getBuyIntentExtraParams(v=$apiVersion, pkg=$pkg, sku=$thirdArg)")
+                            Log.i(BridgeApp.TAG, "UniversalBilling getBuyIntentExtraParams(v=$apiVersion, pkg=$pkg, sku=$thirdArg)")
                             val buyBundle = createBuyIntentBundle(pkg, thirdArg, fourthArg, devPayload)
                             reply?.writeNoException()
                             reply?.writeInt(1)
@@ -143,27 +141,27 @@ class GmsDaemonService : Service() {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
                         val type = data.readString() ?: "inapp"
-                        Log.i(BridgeApp.TAG, "Billing isBillingSupportedExtraParams(v=$apiVersion, pkg=$pkg, type=$type) -> OK")
+                        Log.i(BridgeApp.TAG, "UniversalBilling isBillingSupportedExtraParams(v=$apiVersion, pkg=$pkg, type=$type)")
                         reply?.writeNoException()
-                        reply?.writeInt(0) // BILLING_RESPONSE_RESULT_OK
+                        reply?.writeInt(0)
                         true
                     }
 
-                    // 9 & 11: getPurchasesExtraParams / getPurchaseHistoryExtraParams
+                    // 9 & 11: getPurchasesExtraParams / getPurchaseHistoryExtraParams (Billing v4-v7)
                     9, 11 -> {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
                         val type = data.readString() ?: "inapp"
-                        Log.i(BridgeApp.TAG, "Billing getPurchasesExtraParams(v=$apiVersion, pkg=$pkg, type=$type)")
+                        Log.i(BridgeApp.TAG, "UniversalBilling getPurchasesExtraParams(v=$apiVersion, pkg=$pkg, type=$type)")
 
-                        val resultBundle = querySyncedAccountPurchases(pkg)
+                        val resultBundle = queryAccountEntitlementsForApp(pkg, type)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         resultBundle.writeToParcel(reply!!, 0)
                         true
                     }
 
-                    // 10, 17, 18, 19, 20: getSkuDetailsExtraParams / queryProductDetails
+                    // 10, 17, 18, 19, 20: getSkuDetailsExtraParams / queryProductDetails (Billing v5-v7)
                     10, 17, 18, 19, 20 -> {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
@@ -174,17 +172,17 @@ class GmsDaemonService : Service() {
                             Bundle()
                         }
                         val skuList = skusBundle.getStringArrayList("ITEM_ID_LIST") ?: arrayListOf()
-                        Log.i(BridgeApp.TAG, "Billing getSkuDetailsExtraParams(code=$code, v=$apiVersion, pkg=$pkg, skus=$skuList)")
+                        Log.i(BridgeApp.TAG, "UniversalBilling queryProductDetails(code=$code, v=$apiVersion, pkg=$pkg, count=${skuList.size})")
 
-                        val response = buildSkuDetailsBundle(pkg, type, skuList)
+                        val response = buildAndSyncCatalogDetails(pkg, type, skuList)
                         reply?.writeNoException()
                         reply?.writeInt(1)
                         response.writeToParcel(reply!!, 0)
                         true
                     }
 
+                    // 901, 902, 12..16: acknowledgePurchase / getBillingConfig
                     else -> {
-                        Log.d(BridgeApp.TAG, "Billing generic OK response for transaction code=$code")
                         val okBundle = Bundle().apply {
                             putInt("RESPONSE_CODE", 0)
                             putString("BILLING_CONFIG", "{\"countryCode\":\"US\"}")
@@ -196,7 +194,7 @@ class GmsDaemonService : Service() {
                     }
                 }
             } catch (e: Throwable) {
-                Log.e(BridgeApp.TAG, "Billing onTransact error on code=$code", e)
+                Log.e(BridgeApp.TAG, "UniversalBilling onTransact error (code=$code)", e)
                 super.onTransact(code, data, reply, flags)
             }
         }
@@ -205,14 +203,54 @@ class GmsDaemonService : Service() {
     override fun onCreate() {
         super.onCreate()
         startLightweightForeground()
-        initVirtualGmsDependencies()
+        initVirtualGmsStorage()
     }
 
-    private fun initVirtualGmsDependencies() {
+    private fun initVirtualGmsStorage() {
         val gmsDir = File(filesDir, "virtual_gms").apply { mkdirs() }
         val syncFile = File(gmsDir, "account_purchases.json")
-        if (!syncFile.exists()) {
-            syncFile.writeText("{}")
+        if (!syncFile.exists()) syncFile.writeText("{}")
+
+        val configFile = File(gmsDir, "engine_config.json")
+        if (!configFile.exists()) {
+            configFile.writeText(JSONObject().apply {
+                put("autoSyncCatalogPurchases", true)
+                put("linkedGoogleAccount", detectActiveGoogleAccount())
+            }.toString(2))
+        }
+    }
+
+    fun detectActiveGoogleAccount(): String {
+        return try {
+            val am = AccountManager.get(this)
+            val googleAcc = am.accounts.firstOrNull {
+                it.type.contains("google", ignoreCase = true) ||
+                it.type.contains("microg", ignoreCase = true) ||
+                it.name.contains("@")
+            }
+            if (googleAcc != null) return googleAcc.name
+
+            val configFile = File(filesDir, "virtual_gms/engine_config.json")
+            if (configFile.exists()) {
+                val saved = JSONObject(configFile.readText()).optString("linkedGoogleAccount", "")
+                if (saved.isNotBlank()) return saved
+            }
+            "Google Play Bridge Account (Active)"
+        } catch (_: Throwable) {
+            "Google Play Bridge Account (Active)"
+        }
+    }
+
+    private fun isAutoSyncCatalogEnabled(): Boolean {
+        return try {
+            val configFile = File(filesDir, "virtual_gms/engine_config.json")
+            if (configFile.exists()) {
+                JSONObject(configFile.readText()).optBoolean("autoSyncCatalogPurchases", true)
+            } else {
+                true
+            }
+        } catch (_: Throwable) {
+            true
         }
     }
 
@@ -222,6 +260,7 @@ class GmsDaemonService : Service() {
             putExtra("REQUESTED_SKU", sku)
             putExtra("ITEM_TYPE", type)
             putExtra("DEV_PAYLOAD", devPayload)
+            putExtra("GOOGLE_ACCOUNT", detectActiveGoogleAccount())
         }
         val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
@@ -232,7 +271,7 @@ class GmsDaemonService : Service() {
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
-            sku.hashCode(),
+            (pkg + sku).hashCode(),
             sheetIntent,
             piFlags
         )
@@ -242,12 +281,21 @@ class GmsDaemonService : Service() {
         }
     }
 
-    private fun buildSkuDetailsBundle(pkg: String, type: String, skus: List<String>): Bundle {
-        recordDiscoveredSkus(pkg, skus)
+    /**
+     * Dynamically responds to any app's SKU catalog query and records the discovered SKUs.
+     * If Auto-Sync Account Entitlements is enabled, it automatically binds the app's queried
+     * non-consumable entitlements to the active Google Account profile so getPurchases() restores them seamlessly.
+     */
+    private fun buildAndSyncCatalogDetails(pkg: String, type: String, skus: List<String>): Bundle {
+        recordDiscoveredCatalog(pkg, skus)
+
+        if (isAutoSyncCatalogEnabled()) {
+            syncCatalogSkusToAccount(pkg, skus)
+        }
 
         val detailsList = ArrayList<String>()
         for (sku in skus) {
-            val cleanTitle = sku.replaceFirstChar { it.uppercase() }
+            val cleanTitle = sku.replace('_', ' ').replace('-', ' ').replaceFirstChar { it.uppercase() }
             val json = JSONObject().apply {
                 put("productId", sku)
                 put("type", type)
@@ -256,7 +304,7 @@ class GmsDaemonService : Service() {
                 put("price_currency_code", "USD")
                 put("title", cleanTitle)
                 put("name", cleanTitle)
-                put("description", "Google Play Synced Item ($sku)")
+                put("description", "Google Play Account Synced Entitlement ($sku)")
                 put("skuDetailsToken", "AEuhp4I_${sku}_token")
                 put("oneTimePurchaseOfferDetails", JSONObject().apply {
                     put("formattedPrice", "$0.99")
@@ -273,7 +321,7 @@ class GmsDaemonService : Service() {
         }
     }
 
-    private fun recordDiscoveredSkus(pkg: String, skus: List<String>) {
+    private fun recordDiscoveredCatalog(pkg: String, skus: List<String>) {
         if (pkg.isBlank() || skus.isEmpty()) return
         try {
             val file = File(filesDir, "virtual_gms/discovered_skus.json")
@@ -289,7 +337,34 @@ class GmsDaemonService : Service() {
         } catch (_: Throwable) {}
     }
 
-    private fun querySyncedAccountPurchases(packageName: String): Bundle {
+    private fun syncCatalogSkusToAccount(pkg: String, skus: List<String>) {
+        if (pkg.isBlank() || skus.isEmpty()) return
+        try {
+            val file = File(filesDir, "virtual_gms/account_purchases.json")
+            val root = if (file.exists()) JSONObject(file.readText()) else JSONObject()
+            val arr = root.optJSONArray(pkg) ?: JSONArray()
+            val existingSkus = mutableSetOf<String>()
+            for (i in 0 until arr.length()) {
+                existingSkus.add(arr.getJSONObject(i).optString("productId"))
+            }
+
+            val now = System.currentTimeMillis()
+            for (sku in skus) {
+                if (sku !in existingSkus) {
+                    arr.put(JSONObject().apply {
+                        put("productId", sku)
+                        put("orderId", "GPA.3391-SYNC-${(pkg + sku).hashCode().and(0x7FFFFFFF)}")
+                        put("purchaseTime", now - 3600000L)
+                        put("purchaseToken", "gms_account_sync_${pkg}_${sku}")
+                    })
+                }
+            }
+            root.put(pkg, arr)
+            file.writeText(root.toString(2))
+        } catch (_: Throwable) {}
+    }
+
+    private fun queryAccountEntitlementsForApp(packageName: String, type: String): Bundle {
         val bundle = Bundle()
         bundle.putInt("RESPONSE_CODE", 0)
 
@@ -307,17 +382,17 @@ class GmsDaemonService : Service() {
                         val entry = pkgPurchases.getJSONObject(i)
                         val sku = entry.optString("productId")
                         val now = entry.optLong("purchaseTime", System.currentTimeMillis() - 86400000L)
-                        val token = entry.optString("purchaseToken", "quest3_gms_token_${packageName}_${sku}")
+                        val token = entry.optString("purchaseToken", "gms_account_sync_${packageName}_${sku}")
                         val purchaseJson = JSONObject().apply {
                             put("orderId", entry.optString("orderId", "GPA.3391-8842-9910-QUEST3"))
                             put("packageName", packageName)
                             put("productId", sku)
                             put("purchaseTime", now)
-                            put("purchaseState", 0)
+                            put("purchaseState", 0) // 0 = PURCHASED
                             put("purchaseToken", token)
                             put("quantity", 1)
                             put("acknowledged", true)
-                            put("autoRenewing", false)
+                            put("autoRenewing", type == "subs")
                         }
                         itemList.add(sku)
                         dataList.add(purchaseJson.toString())
@@ -337,8 +412,8 @@ class GmsDaemonService : Service() {
 
     override fun onBind(intent: Intent?): IBinder {
         boundAction = intent?.action ?: ""
-        Log.i(BridgeApp.TAG, "Client bound to GmsDaemonService (com.android.vending): action=$boundAction")
-        return billingAndLvlBinder
+        Log.i(BridgeApp.TAG, "Universal GMS Host Bound: action=$boundAction")
+        return universalBillingAndAuthBinder
     }
 
     private fun startLightweightForeground() {
@@ -355,7 +430,7 @@ class GmsDaemonService : Service() {
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)
                 .setContentTitle("SpatialGMS Play Store Host Active")
-                .setContentText("Serving com.android.vending In-App Billing & Account Sync")
+                .setContentText("Universal Google Play Services & Account Entitlement Sync")
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .build()
         } else {

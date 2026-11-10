@@ -4,13 +4,24 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
-    <!-- Quest 3 Spatial Panel Compatibility -->
+    <!-- Declare standard Play Store billing permission so client apps trust this package -->
+    <permission
+        android:name="com.android.vending.BILLING"
+        android:protectionLevel="normal" />
+    <permission
+        android:name="com.android.vending.CHECK_LICENSE"
+        android:protectionLevel="normal" />
+
+    <uses-permission android:name="com.android.vending.BILLING" />
+    <uses-permission android:name="com.android.vending.CHECK_LICENSE" />
+
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
 
     <application
@@ -23,7 +34,11 @@
         android:extractNativeLibs="true"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
 
-        <!-- iOS 27 Spatial Launcher Panel optimized for Quest 3 -->
+        <meta-data
+            android:name="com.google.android.gms.version"
+            android:value="243635000" />
+
+        <!-- Main iOS 27 Spatial Launcher -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -41,11 +56,23 @@
             </intent-filter>
         </activity>
 
-        <!-- Sandboxed Guest App Container (:sandbox_p0) -->
+        <!-- Interactive Google Play In-App Purchase Sheet (Triggered when you click "Buy" in Polytopia) -->
+        <activity
+            android:name=".BillingPurchaseSheetActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
+            android:resizeableActivity="true">
+            <intent-filter>
+                <action android:name="com.android.vending.billing.PURCHASE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- TinyVM Spatial Bridge Console -->
         <activity
             android:name=".ProxySandboxActivity"
-            android:process=":sandbox_p0"
-            android:exported="false"
+            android:exported="true"
             android:hardwareAccelerated="true"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
             android:resizeableActivity="true">
@@ -54,15 +81,15 @@
                 android:defaultHeight="800dp" />
         </activity>
 
-        <!-- Headless Google Play Dependencies & Billing Daemon (:gms_daemon) -->
+        <!-- Official Play Store Billing (v3-v7) & Licensing Responder Service -->
         <service
             android:name=".GmsDaemonService"
-            android:process=":gms_daemon"
             android:exported="true"
+            android:enabled="true"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="virtual_gms_and_play_billing_engine" />
+                android:value="google_play_billing_and_gms_host" />
             <intent-filter>
                 <action android:name="com.android.vending.billing.InAppBillingService.BIND" />
                 <action android:name="com.android.vending.licensing.ILicensingService" />

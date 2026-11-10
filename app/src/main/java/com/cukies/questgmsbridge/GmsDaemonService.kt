@@ -20,7 +20,6 @@ import java.io.File
 class GmsDaemonService : Service() {
 
     companion object {
-        // Common Polytopia Tribe SKUs so you can 1-click sync them in the Vault or auto-detect them
         val POLYTOPIA_TRIBE_SKUS = listOf(
             "kickoo", "hoodrick", "luxidoor", "vengir", "zebasi",
             "ai-mo", "aimo", "quali", "quetzali", "yadakk",
@@ -31,27 +30,24 @@ class GmsDaemonService : Service() {
         )
     }
 
+    private var boundAction: String = ""
+
     private val billingAndLvlBinder = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+            val billingDescriptor = "com.android.vending.billing.IInAppBillingService"
+
             if (code == INTERFACE_TRANSACTION) {
-                reply?.writeString("com.android.vending.billing.IInAppBillingService")
+                reply?.writeString(billingDescriptor)
                 return true
             }
 
             return try {
-                // Peek interface descriptor safely
-                data.setDataPosition(0)
-                val descriptor = try {
-                    data.readInterfaceToken()
-                } catch (_: Throwable) {
-                    "com.android.vending.billing.IInAppBillingService"
-                }
-
-                // Handle Google Play LVL (ILicensingService.checkLicense)
-                if (descriptor.contains("ILicensingService")) {
+                if (boundAction.contains("ILicensingService")) {
                     reply?.writeNoException()
                     return true
                 }
+
+                data.enforceInterface(billingDescriptor)
 
                 when (code) {
                     // 1: isBillingSupported(int apiVersion, String packageName, String type)
@@ -118,15 +114,13 @@ class GmsDaemonService : Service() {
                         true
                     }
 
-                    // 6: getBuyIntentToReplaceSkus OR getPurchaseHistory OR getBuyIntentExtraParams
-                    // 8: getBuyIntentExtraParams(int apiVersion, String packageName, String sku, String type, String developerPayload, Bundle extraParams)
+                    // 6 & 8: getPurchaseHistory OR getBuyIntentExtraParams
                     6, 8 -> {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
                         val thirdArg = data.readString() ?: ""
                         val fourthArg = data.readString() ?: "inapp"
 
-                        // Distinguish getPurchaseHistory (where 3rd arg is "inapp" or "subs") from getBuyIntentExtraParams (where 3rd arg is the SKU!)
                         if (thirdArg == "inapp" || thirdArg == "subs") {
                             Log.i(BridgeApp.TAG, "Billing getPurchaseHistory(v=$apiVersion, pkg=$pkg, type=$thirdArg)")
                             val resultBundle = querySyncedAccountPurchases(pkg)
@@ -155,8 +149,7 @@ class GmsDaemonService : Service() {
                         true
                     }
 
-                    // 9: getPurchasesExtraParams(int apiVersion, String packageName, String type, String continuationToken, Bundle extraParams)
-                    // 11: getPurchaseHistoryExtraParams
+                    // 9 & 11: getPurchasesExtraParams / getPurchaseHistoryExtraParams
                     9, 11 -> {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
@@ -170,8 +163,7 @@ class GmsDaemonService : Service() {
                         true
                     }
 
-                    // 10: getSkuDetailsExtraParams(int apiVersion, String packageName, String type, Bundle skusBundle, Bundle extraParams)
-                    // 17, 18, 19, 20: Billing v5/v6/v7 queryProductDetails / getSkuDetailsExtraParams
+                    // 10, 17, 18, 19, 20: getSkuDetailsExtraParams / queryProductDetails
                     10, 17, 18, 19, 20 -> {
                         val apiVersion = data.readInt()
                         val pkg = data.readString() ?: ""
@@ -191,7 +183,6 @@ class GmsDaemonService : Service() {
                         true
                     }
 
-                    // 901, 902, 12, 13, 14, 15, 16: acknowledgePurchase / billing config queries
                     else -> {
                         Log.d(BridgeApp.TAG, "Billing generic OK response for transaction code=$code")
                         val okBundle = Bundle().apply {
@@ -246,13 +237,12 @@ class GmsDaemonService : Service() {
             piFlags
         )
         return Bundle().apply {
-            putInt("RESPONSE_CODE", 0) // BILLING_RESPONSE_RESULT_OK
+            putInt("RESPONSE_CODE", 0)
             putParcelable("BUY_INTENT", pendingIntent)
         }
     }
 
     private fun buildSkuDetailsBundle(pkg: String, type: String, skus: List<String>): Bundle {
-        // Also auto-record any queried SKUs into discovered_skus.json so the user can see what SKUs Polytopia asked for!
         recordDiscoveredSkus(pkg, skus)
 
         val detailsList = ArrayList<String>()
@@ -268,7 +258,6 @@ class GmsDaemonService : Service() {
                 put("name", cleanTitle)
                 put("description", "Google Play Synced Item ($sku)")
                 put("skuDetailsToken", "AEuhp4I_${sku}_token")
-                // Billing v5/v6/v7 ProductDetails format support
                 put("oneTimePurchaseOfferDetails", JSONObject().apply {
                     put("formattedPrice", "$0.99")
                     put("priceAmountMicros", 990000L)
@@ -324,7 +313,7 @@ class GmsDaemonService : Service() {
                             put("packageName", packageName)
                             put("productId", sku)
                             put("purchaseTime", now)
-                            put("purchaseState", 0) // 0 = Purchased
+                            put("purchaseState", 0)
                             put("purchaseToken", token)
                             put("quantity", 1)
                             put("acknowledged", true)
@@ -347,7 +336,8 @@ class GmsDaemonService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder {
-        Log.i(BridgeApp.TAG, "Client bound to GmsDaemonService (com.android.vending): action=${intent?.action}")
+        boundAction = intent?.action ?: ""
+        Log.i(BridgeApp.TAG, "Client bound to GmsDaemonService (com.android.vending): action=$boundAction")
         return billingAndLvlBinder
     }
 

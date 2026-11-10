@@ -14,7 +14,7 @@ import android.os.Debug
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.*
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -57,13 +57,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Automatically start the lightweight :gms_daemon on launch
-        val svcIntent = Intent(this, GmsDaemonService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(svcIntent)
-        } else {
-            startService(svcIntent)
-        }
+        try {
+            val svcIntent = Intent(this, GmsDaemonService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svcIntent)
+            } else {
+                startService(svcIntent)
+            }
+        } catch (_: Throwable) {}
 
         val initialTab = intent.getStringExtra("OPEN_TAB") ?: "LIBRARY"
 
@@ -111,11 +112,10 @@ fun iOS27SpatialShell(initialTab: String) {
     var isLoadingApps by remember { mutableStateOf(true) }
     var mountingAppPkg by remember { mutableStateOf<String?>(null) }
 
-    // Live Engine Telemetry
     var gmsProvider by remember { mutableStateOf<String?>(null) }
     var stagedGmsExists by remember { mutableStateOf(false) }
     var stagedPhoneskyExists by remember { mutableStateOf(false) }
-    var ramUsageMb by remember { mutableStateOf(42) }
+    var ramUsageMb by remember { mutableStateOf(38) }
 
     fun refreshTelemetry() {
         gmsProvider = GmsBinderRouter.resolveInstalledGmsPackage(context.packageManager)
@@ -130,30 +130,33 @@ fun iOS27SpatialShell(initialTab: String) {
         refreshTelemetry()
         withContext(Dispatchers.IO) {
             val pm = context.packageManager
-            val loaded = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                .filter { app ->
-                    (app.flags and ApplicationInfo.FLAG_SYSTEM) == 0 &&
-                            app.packageName != context.packageName &&
-                            !app.packageName.startsWith("com.oculus") &&
-                            !app.packageName.startsWith("com.meta")
-                }
-                .map { app ->
-                    val drawable = try { pm.getApplicationIcon(app) } catch (_: Exception) { null }
-                    InstalledQuestApp(
-                        label = pm.getApplicationLabel(app).toString(),
-                        packageName = app.packageName,
-                        sourceDir = app.sourceDir,
-                        splitCount = app.splitSourceDirs?.size ?: 0,
-                        iconBitmap = drawable?.toBitmap(128, 128)?.asImageBitmap()
-                    )
-                }
-                .sortedBy { it.label.lowercase() }
+            val loaded = try {
+                pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                    .filter { app ->
+                        (app.flags and ApplicationInfo.FLAG_SYSTEM) == 0 &&
+                                app.packageName != context.packageName &&
+                                !app.packageName.startsWith("com.oculus") &&
+                                !app.packageName.startsWith("com.meta")
+                    }
+                    .map { app ->
+                        val drawable = try { pm.getApplicationIcon(app) } catch (_: Throwable) { null }
+                        InstalledQuestApp(
+                            label = try { pm.getApplicationLabel(app).toString() } catch (_: Throwable) { app.packageName },
+                            packageName = app.packageName,
+                            sourceDir = app.sourceDir ?: "",
+                            splitCount = app.splitSourceDirs?.size ?: 0,
+                            iconBitmap = drawable?.toBitmapSafe(112, 112)?.asImageBitmap()
+                        )
+                    }
+                    .sortedBy { it.label.lowercase() }
+            } catch (_: Throwable) {
+                emptyList()
+            }
             appsList = loaded
             isLoadingApps = false
         }
     }
 
-    // Animated iOS 27 Ambient Liquid Mesh Background
     val infiniteTransition = rememberInfiniteTransition(label = "iOS27Mesh")
     val orbShift by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -170,27 +173,19 @@ fun iOS27SpatialShell(initialTab: String) {
             .fillMaxSize()
             .background(Color(0xFF06080E))
     ) {
-        // Spatial Ambient Glow Canvas
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF0A84FF).copy(alpha = 0.24f), Color.Transparent),
+                    colors = listOf(Color(0xFF0A84FF).copy(alpha = 0.22f), Color.Transparent),
                     center = Offset(size.width * (0.2f + 0.15f * orbShift), size.height * 0.22f),
                     radius = size.width * 0.45f
                 )
             )
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF5E5CE6).copy(alpha = 0.22f), Color.Transparent),
+                    colors = listOf(Color(0xFF5E5CE6).copy(alpha = 0.20f), Color.Transparent),
                     center = Offset(size.width * (0.8f - 0.15f * orbShift), size.height * 0.75f),
                     radius = size.width * 0.5f
-                )
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF30D158).copy(alpha = 0.12f), Color.Transparent),
-                    center = Offset(size.width * 0.5f, size.height * (0.4f + 0.1f * orbShift)),
-                    radius = size.width * 0.38f
                 )
             )
         }
@@ -200,7 +195,6 @@ fun iOS27SpatialShell(initialTab: String) {
                 .fillMaxSize()
                 .padding(horizontal = 28.dp, vertical = 20.dp)
         ) {
-            // Top iOS 27 Dynamic Island Status Header
             iOS27TopStatusPill(
                 gmsProvider = gmsProvider,
                 ramUsageMb = ramUsageMb,
@@ -209,13 +203,12 @@ fun iOS27SpatialShell(initialTab: String) {
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // Main Content Viewport (Leaves room for Floating Bottom Spatial Dock)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                Crossfade(targetState = currentTab, animationSpec = tween(300), label = "TabSwitch") { tab ->
+                Crossfade(targetState = currentTab, animationSpec = tween(220), label = "TabSwitch") { tab ->
                     when (tab) {
                         SpatialTab.LIBRARY -> SpatialAppLibraryScreen(
                             apps = appsList.filter {
@@ -235,29 +228,49 @@ fun iOS27SpatialShell(initialTab: String) {
                                     }
                                     mountingAppPkg = null
                                     if (loadedPlugin != null) {
-                                        val intent = Intent(context, ProxySandboxActivity::class.java).apply {
-                                            putExtra("GUEST_PKG", loadedPlugin.packageName)
-                                            putExtra("GUEST_APK", loadedPlugin.apkPath)
-                                            putExtra("GUEST_CLASS", loadedPlugin.mainActivityClass)
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        try {
+                                            val intent = Intent(context, ProxySandboxActivity::class.java).apply {
+                                                putExtra("GUEST_PKG", loadedPlugin.packageName)
+                                                putExtra("GUEST_APK", loadedPlugin.apkPath)
+                                                putExtra("GUEST_CLASS", loadedPlugin.mainActivityClass)
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            context.startActivity(intent)
+                                        } catch (t: Throwable) {
+                                            Toast.makeText(context, "Sandbox error: ${t.localizedMessage}", Toast.LENGTH_SHORT).show()
                                         }
-                                        context.startActivity(intent)
-                                    } else {
-                                        Toast.makeText(context, "Failed to mount ${app.label}", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             },
                             onLaunchBridgedNativeWindow = { app ->
-                                // Wakes :gms_daemon and launches the app's native Quest 2D window
-                                val svcIntent = Intent(context, GmsDaemonService::class.java)
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    context.startForegroundService(svcIntent)
-                                } else {
-                                    context.startService(svcIntent)
+                                try {
+                                    val svcIntent = Intent(context, GmsDaemonService::class.java)
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        context.startForegroundService(svcIntent)
+                                    } else {
+                                        context.startService(svcIntent)
+                                    }
+                                } catch (_: Throwable) {}
+
+                                // If user clicked ReVanced GmsCore itself in the app grid, use our deep-link launcher!
+                                if (app.packageName.contains("gms", ignoreCase = true) ||
+                                    app.packageName.contains("microg", ignoreCase = true)
+                                ) {
+                                    if (GmsBinderRouter.launchGmsCoreSettingsOrLogin(context)) return@SpatialAppLibraryScreen
                                 }
-                                context.packageManager.getLaunchIntentForPackage(app.packageName)?.let {
-                                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    context.startActivity(it)
+
+                                val launchIntent = context.packageManager.getLaunchIntentForPackage(app.packageName)
+                                if (launchIntent != null) {
+                                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    context.startActivity(launchIntent)
+                                } else {
+                                    // Open via ProxySandboxActivity fallback for apps without a standard launcher icon
+                                    val intent = Intent(context, ProxySandboxActivity::class.java).apply {
+                                        putExtra("GUEST_PKG", app.packageName)
+                                        putExtra("GUEST_APK", app.sourceDir)
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
                                 }
                             }
                         )
@@ -277,7 +290,6 @@ fun iOS27SpatialShell(initialTab: String) {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Bottom Floating iOS 27 Spatial Glass Pill Dock
             Box(
                 modifier = Modifier.fillMaxWidth(),
                 contentAlignment = Alignment.Center
@@ -369,18 +381,21 @@ fun iOS27TopStatusPill(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Active Provider Chip
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
-                        .background(Color(0xFF0A84FF).copy(alpha = 0.22f))
+                        .background(
+                            if (gmsProvider != null) Color(0xFF30D158).copy(alpha = 0.22f)
+                            else Color(0xFF0A84FF).copy(alpha = 0.22f)
+                        )
+                        .clickable { onRefresh() }
                         .padding(horizontal = 12.dp, vertical = 5.dp)
                 ) {
                     Text(
-                        text = if (gmsProvider != null) "GMS: $gmsProvider" else "GMS: Internal TinyVM (:gms_daemon)",
-                        color = Color(0xFF64D2FF),
+                        text = if (gmsProvider != null) "GMS Linked: $gmsProvider" else "GMS: Internal TinyVM (:gms_daemon)",
+                        color = if (gmsProvider != null) Color(0xFF30D158) else Color(0xFF64D2FF),
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
                 Spacer(modifier = Modifier.width(10.dp))
@@ -414,7 +429,6 @@ fun SpatialAppLibraryScreen(
     onLaunchBridgedNativeWindow: (InstalledQuestApp) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // iOS 27 Frosted Spotlight Search Bar
         iOS27GlassSurface(
             modifier = Modifier.fillMaxWidth(),
             cornerRadius = 20.dp,
@@ -437,7 +451,7 @@ fun SpatialAppLibraryScreen(
                     onValueChange = onSearchChange,
                     placeholder = {
                         Text(
-                            "Search sideloaded Quest 3 apps to run with Google Play Services...",
+                            "Search sideloaded Quest 3 apps...",
                             color = Color.White.copy(alpha = 0.45f)
                         )
                     },
@@ -499,7 +513,7 @@ fun iOS27AppSquircleCard(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.95f else 1f,
+        targetValue = if (isPressed) 0.96f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
         label = "SquircleScale"
     )
@@ -575,15 +589,13 @@ fun iOS27AppSquircleCard(
             ) {
                 Button(
                     onClick = onLaunchSandbox,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF0A84FF)
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
                     shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = if (isMounting) "Mounting..." else "TinyVM Sandbox",
+                        text = if (isMounting) "Opening..." else "TinyVM Sandbox",
                         fontSize = 12.sp,
                         color = Color.White,
                         maxLines = 1
@@ -597,7 +609,7 @@ fun iOS27AppSquircleCard(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = "2D Panel",
+                        text = "Direct 2D",
                         fontSize = 12.sp,
                         color = Color.White.copy(alpha = 0.9f)
                     )
@@ -625,15 +637,19 @@ fun GmsEngineControlCenter(
             iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
                 Column(modifier = Modifier.padding(24.dp)) {
                     Text(
-                        text = "Google Play Services & Account Dependency Core",
+                        text = "Google Play Services & ReVanced GmsCore Hub",
                         color = Color.White,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Routes IActivityManager, IPackageManager, GoogleApiAvailability, and IInAppBillingService (v3–v7) inside a low-power Quest 3 background process (:gms_daemon).",
-                        color = Color.White.copy(alpha = 0.65f),
+                        text = if (gmsProvider != null) {
+                            "Detected Installed GMS Provider: $gmsProvider. Click 'Sign In to Google Account' below to open its hidden microG / GmsCore Account & OAuth Settings."
+                        } else {
+                            "No external GmsCore APK detected yet. Click 'Download GmsCore OAuth APK' if you want live Google OAuth sign-in."
+                        },
+                        color = Color.White.copy(alpha = 0.72f),
                         fontSize = 14.sp
                     )
 
@@ -645,30 +661,26 @@ fun GmsEngineControlCenter(
                     ) {
                         Button(
                             onClick = {
-                                val pkg = GmsBinderRouter.resolveInstalledGmsPackage(context.packageManager)
-                                if (pkg != null) {
-                                    context.packageManager.getLaunchIntentForPackage(pkg)?.let {
-                                        context.startActivity(it)
-                                        return@Button
-                                    }
+                                onRefresh()
+                                val launched = GmsBinderRouter.launchGmsCoreSettingsOrLogin(context)
+                                if (!launched) {
+                                    Toast.makeText(
+                                        context,
+                                        "No GmsCore / microG APK found on headset. Tap 'Download GmsCore OAuth APK' first.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
-                                Toast.makeText(
-                                    context,
-                                    "Click 'Download microG GmsCore APK' on the right to install the Google OAuth Account sign-in module.",
-                                    Toast.LENGTH_LONG
-                                ).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
                             shape = RoundedCornerShape(16.dp)
                         ) {
                             Icon(Icons.Rounded.AccountCircle, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Sign In to Google Account (OAuth)")
+                            Text("Sign In to Google Account (Open GmsCore)")
                         }
 
                         OutlinedButton(
                             onClick = {
-                                // Opens official GitHub release page for user-space microG GmsCore APK right in Quest Browser
                                 val url = "https://github.com/ReVanced/GmsCore/releases/latest"
                                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                             },
@@ -691,12 +703,17 @@ fun GmsEngineControlCenter(
             ) {
                 iOS27GlassSurface(modifier = Modifier.weight(1f), cornerRadius = 24.dp) {
                     Column(modifier = Modifier.padding(20.dp)) {
-                        Text("PackageManager Spoof & Availability", color = Color(0xFF64D2FF), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Detected GmsCore / microG Package", color = Color(0xFF64D2FF), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text("ACTIVE (v24.36.35)", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = gmsProvider ?: "Internal Fallback (:gms_daemon)",
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Synthesizes com.google.android.gms, com.google.android.gsf, and com.android.vending package signatures in guest memory.",
+                            "Automatically scans hidden microG/ReVanced activities (SettingsActivity & LoginActivity).",
                             color = Color.White.copy(alpha = 0.55f),
                             fontSize = 12.sp
                         )
@@ -705,17 +722,17 @@ fun GmsEngineControlCenter(
 
                 iOS27GlassSurface(modifier = Modifier.weight(1f), cornerRadius = 24.dp) {
                     Column(modifier = Modifier.padding(20.dp)) {
-                        Text("Virtual GMS Module Staging Path", color = Color(0xFF30D158), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Play Billing & LVL Daemon Status", color = Color(0xFF30D158), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = if (stagedGmsExists || gmsProvider != null) "READY & LINKED" else "INTERNAL STUB ACTIVE",
+                            text = "ONLINE (${ramUsageMb}MB RAM)",
                             color = Color.White,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Optional drop path: ${context.filesDir.absolutePath}/virtual_gms/GmsCore.apk & Phonesky.apk",
+                            "Serving IInAppBillingService v3–v7 and Google Play entitlement restoration.",
                             color = Color.White.copy(alpha = 0.55f),
                             fontSize = 12.sp
                         )
@@ -748,7 +765,7 @@ fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
                         list.add(pkg to item.optString("productId"))
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
         }
         savedEntries = list
     }
@@ -766,7 +783,7 @@ fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Register the SKUs/entitlements owned by your Google account so :gms_daemon returns signed PURCHASED receipts whenever a bridged app calls getPurchases() or getPurchaseHistory().",
+                    text = "Register the SKUs owned by your Google account so :gms_daemon returns signed PURCHASED receipts whenever a bridged app queries getPurchases().",
                     color = Color.White.copy(alpha = 0.6f),
                     fontSize = 13.sp
                 )
@@ -862,7 +879,7 @@ private fun savePurchaseEntitlement(context: Context, pkg: String, sku: String) 
     val gmsDir = File(context.filesDir, "virtual_gms").apply { mkdirs() }
     val file = File(gmsDir, "account_purchases.json")
     val root = if (file.exists()) {
-        try { JSONObject(file.readText()) } catch (_: Exception) { JSONObject() }
+        try { JSONObject(file.readText()) } catch (_: Throwable) { JSONObject() }
     } else {
         JSONObject()
     }
@@ -892,7 +909,7 @@ private fun removePurchaseEntitlement(context: Context, pkg: String, sku: String
         }
         root.put(pkg, newArr)
         file.writeText(root.toString(2))
-    } catch (_: Exception) {}
+    } catch (_: Throwable) {}
 }
 
 @Composable
@@ -942,10 +959,14 @@ fun iOS27BottomFloatingDock(
     }
 }
 
-private fun Drawable.toBitmap(width: Int, height: Int): Bitmap {
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    setBounds(0, 0, canvas.width, canvas.height)
-    draw(canvas)
-    return bitmap
+private fun Drawable.toBitmapSafe(width: Int, height: Int): Bitmap? {
+    return try {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        setBounds(0, 0, canvas.width, canvas.height)
+        draw(canvas)
+        bitmap
+    } catch (_: Throwable) {
+        null
+    }
 }

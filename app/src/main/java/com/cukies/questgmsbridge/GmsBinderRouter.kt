@@ -14,38 +14,31 @@ import java.lang.reflect.Proxy
 
 object GmsBinderRouter {
 
-    private val GMS_PROVIDER_PACKAGES = listOf(
-        "com.google.android.gms",
-        "org.microg.gms",
+    private val KNOWN_GMS_PACKAGES = listOf(
         "app.revanced.android.gms",
-        "com.mgoogle.android.gms"
-    )
-
-    private val VENDING_PROVIDER_PACKAGES = listOf(
-        "com.android.vending",
-        "com.android.vending.billing"
-    )
-
-    private val VIRTUALIZED_GMS_PACKAGES = setOf(
+        "com.mgoogle.android.gms",
+        "org.microg.gms",
         "com.google.android.gms",
-        "com.google.android.gsf",
-        "com.android.vending"
+        "com.vanced.android.gms",
+        "io.github.vvb2060.ims"
+    )
+
+    private val KNOWN_GMS_ACTIVITIES = listOf(
+        "org.microg.gms.ui.SettingsActivity",
+        "org.microg.gms.ui.MainActivity",
+        "org.microg.gms.auth.login.LoginActivity",
+        "com.google.android.gms.app.settings.GoogleSettingsActivity",
+        "com.google.android.gms.common.settings.GoogleSettingsActivity"
     )
 
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     fun installHooks(context: Context) {
-        hookActivityManager(context)
-        hookPackageManager(context)
-    }
-
-    @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun hookActivityManager(context: Context) {
         try {
             val activityManagerClass = Class.forName("android.app.ActivityManager")
             val singletonField = activityManagerClass.getDeclaredField("IActivityManagerSingleton").apply {
                 isAccessible = true
             }
-            val singleton = singletonField.get(null)
+            val singleton = singletonField.get(null) ?: return
             val singletonClass = Class.forName("android.util.Singleton")
             val mInstanceField = singletonClass.getDeclaredField("mInstance").apply {
                 isAccessible = true
@@ -59,68 +52,132 @@ object GmsBinderRouter {
             val proxy = Proxy.newProxyInstance(
                 context.classLoader,
                 arrayOf(iAmInterface),
-                ActivityManagerProxy(context, originalAm)
+                ActivityManagerProxy(context.applicationContext, originalAm)
             )
             mInstanceField.set(singleton, proxy)
         } catch (t: Throwable) {
-            Log.e(BridgeApp.TAG, "Failed to hook IActivityManagerSingleton", t)
+            Log.w(BridgeApp.TAG, "IActivityManager hook skipped: ${t.message}")
         }
     }
 
     /**
-     * Hooks ActivityThread.sPackageManager so when a bridged app calls
-     * GoogleApiAvailability.isGooglePlayServicesAvailable(), Quest 3 reports GMS is installed and active.
+     * Scans all installed packages on the Quest 3 to find ReVanced GmsCore or microG,
+     * even if it uses a custom package prefix or hides its launcher activity.
      */
-    @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun hookPackageManager(context: Context) {
-        try {
-            val activityThreadClass = Class.forName("android.app.ActivityThread")
-            val currentActivityThread = activityThreadClass.getDeclaredMethod("currentActivityThread").apply {
-                isAccessible = true
-            }.invoke(null)
-
-            val sPackageManagerField = activityThreadClass.getDeclaredField("sPackageManager").apply {
-                isAccessible = true
-            }
-            val originalPm = sPackageManagerField.get(currentActivityThread) ?: return
-            val iPmInterface = Class.forName("android.content.pm.IPackageManager")
-
-            val proxy = Proxy.newProxyInstance(
-                context.classLoader,
-                arrayOf(iPmInterface),
-                PackageManagerProxy(context, originalPm)
-            )
-            sPackageManagerField.set(currentActivityThread, proxy)
-
-            // Also update ContextImpl's PackageManager mPM field if initialized
-            val pm = context.packageManager
-            try {
-                val mPmField = pm.javaClass.getDeclaredField("mPM").apply { isAccessible = true }
-                mPmField.set(pm, proxy)
-            } catch (_: Throwable) {}
-        } catch (t: Throwable) {
-            Log.e(BridgeApp.TAG, "Failed to hook sPackageManager", t)
-        }
-    }
-
     fun resolveInstalledGmsPackage(pm: PackageManager): String? {
-        for (pkg in GMS_PROVIDER_PACKAGES) {
+        // 1. Check exact known package names first
+        for (pkg in KNOWN_GMS_PACKAGES) {
             try {
                 pm.getPackageInfo(pkg, 0)
                 return pkg
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
         }
-        return null
+
+        // 2. Deep scan all installed user packages for ReVanced / microG / GmsCore signatures
+        return try {
+            val allApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            val match = allApps.firstOrNull { app ->
+                val pkg = app.packageName.lowercase()
+                val label = try { pm.getApplicationLabel(app).toString().lowercase() } catch (_: Throwable) { "" }
+                (pkg != "com.cukies.questgmsbridge") && (
+                    pkg.endsWith(".android.gms") ||
+                    pkg.contains("microg") ||
+                    pkg.contains("revanced") && pkg.contains("gms") ||
+                    label.contains("microg") ||
+                    label.contains("gmscore")
+                )
+            }
+            match?.packageName
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     fun resolveInstalledVendingPackage(pm: PackageManager): String? {
-        for (pkg in VENDING_PROVIDER_PACKAGES) {
+        val candidates = listOf("com.android.vending", "com.android.vending.billing")
+        for (pkg in candidates) {
             try {
                 pm.getPackageInfo(pkg, 0)
                 return pkg
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
         }
         return null
+    }
+
+    /**
+     * Launches ReVanced GmsCore or microG Settings/Login even when it has no Launcher icon.
+     */
+    fun launchGmsCoreSettingsOrLogin(context: Context): Boolean {
+        val pm = context.packageManager
+        val gmsPkg = resolveInstalledGmsPackage(pm) ?: return false
+
+        // Strategy 1: Standard Launch Intent
+        try {
+            val stdIntent = pm.getLaunchIntentForPackage(gmsPkg)
+            if (stdIntent != null) {
+                stdIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(stdIntent)
+                return true
+            }
+        } catch (_: Throwable) {}
+
+        // Strategy 2: Query all exported and internal Activities inside the GmsCore APK
+        try {
+            val pkgInfo: PackageInfo = pm.getPackageInfo(gmsPkg, PackageManager.GET_ACTIVITIES)
+            val activities = pkgInfo.activities ?: emptyArray()
+
+            // Look for SettingsActivity or LoginActivity first
+            val targetActivity = activities.firstOrNull { act ->
+                act.name.contains("SettingsActivity", ignoreCase = true) ||
+                act.name.contains("MainActivity", ignoreCase = true) ||
+                act.name.contains("LoginActivity", ignoreCase = true)
+            } ?: activities.firstOrNull { it.exported }
+
+            if (targetActivity != null) {
+                val explicitIntent = Intent().apply {
+                    component = ComponentName(gmsPkg, targetActivity.name)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(explicitIntent)
+                return true
+            }
+        } catch (t: Throwable) {
+            Log.w(BridgeApp.TAG, "Activity scan fallback for $gmsPkg: ${t.message}")
+        }
+
+        // Strategy 3: Try known hardcoded microG / ReVanced activity class names
+        for (actName in KNOWN_GMS_ACTIVITIES) {
+            try {
+                val intent = Intent().apply {
+                    component = ComponentName(gmsPkg, actName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                return true
+            } catch (_: Throwable) {}
+        }
+
+        // Strategy 4: Try microG Settings Action Intent
+        try {
+            val actionIntent = Intent("org.microg.gms.action.SETTINGS").apply {
+                setPackage(gmsPkg)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(actionIntent)
+            return true
+        } catch (_: Throwable) {}
+
+        // Strategy 5: Open Android App Info page for GmsCore so user can tap "Open" or "Permissions"
+        return try {
+            val appDetails = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = android.net.Uri.parse("package:$gmsPkg")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(appDetails)
+            true
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private class ActivityManagerProxy(
@@ -129,12 +186,16 @@ object GmsBinderRouter {
     ) : InvocationHandler {
 
         override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
-            if (args != null && (method.name == "bindService" ||
-                        method.name == "bindServiceInstance" ||
-                        method.name == "bindIsolatedService" ||
-                        method.name == "startService")
-            ) {
-                rerouteGmsAndBillingIntents(args)
+            try {
+                if (args != null && (method.name == "bindService" ||
+                            method.name == "bindServiceInstance" ||
+                            method.name == "bindIsolatedService" ||
+                            method.name == "startService")
+                ) {
+                    rerouteGmsAndBillingIntents(args)
+                }
+            } catch (t: Throwable) {
+                Log.w(BridgeApp.TAG, "Non-fatal router intercept: ${t.message}")
             }
             return try {
                 method.invoke(base, *(args ?: emptyArray()))
@@ -152,7 +213,6 @@ object GmsBinderRouter {
             val action = intent.action ?: ""
             val pm = context.packageManager
 
-            // Route Google Play Services & Auth / Games bindings
             if (targetPkg == "com.google.android.gms" ||
                 targetPkg == "com.google.android.gsf" ||
                 action.startsWith("com.google.android.gms")
@@ -168,7 +228,6 @@ object GmsBinderRouter {
                 }
             }
 
-            // Route Google Play Billing (IAP v3-v7) & Licensing Service bindings
             if (targetPkg == "com.android.vending" ||
                 action.contains("com.android.vending.billing.InAppBillingService.BIND") ||
                 action.contains("com.android.vending.licensing.ILicensingService")
@@ -176,72 +235,6 @@ object GmsBinderRouter {
                 val hostVending = resolveInstalledVendingPackage(pm)
                 if (hostVending == null) {
                     intent.component = ComponentName(context.packageName, GmsDaemonService::class.java.name)
-                }
-            }
-        }
-    }
-
-    private class PackageManagerProxy(
-        private val context: Context,
-        private val base: Any
-    ) : InvocationHandler {
-
-        override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
-            if (args != null && args.isNotEmpty()) {
-                when (method.name) {
-                    "getPackageInfo" -> {
-                        val pkgName = args[0] as? String
-                        if (pkgName != null && pkgName in VIRTUALIZED_GMS_PACKAGES) {
-                            val realOrSynthesized = try {
-                                method.invoke(base, *args) as? PackageInfo
-                            } catch (_: Throwable) {
-                                null
-                            }
-                            if (realOrSynthesized != null) return realOrSynthesized
-                            return synthesizeGmsPackageInfo(pkgName)
-                        }
-                    }
-                    "getApplicationInfo" -> {
-                        val pkgName = args[0] as? String
-                        if (pkgName != null && pkgName in VIRTUALIZED_GMS_PACKAGES) {
-                            val realInfo = try {
-                                method.invoke(base, *args) as? ApplicationInfo
-                            } catch (_: Throwable) {
-                                null
-                            }
-                            if (realInfo != null) return realInfo
-                            return synthesizeGmsApplicationInfo(pkgName)
-                        }
-                    }
-                    "getInstallerPackageName" -> {
-                        return "com.android.vending"
-                    }
-                }
-            }
-            return try {
-                method.invoke(base, *(args ?: emptyArray()))
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw e.targetException
-            }
-        }
-
-        private fun synthesizeGmsPackageInfo(pkgName: String): PackageInfo {
-            return PackageInfo().apply {
-                packageName = pkgName
-                versionName = "24.36.35 (190400-675802152)"
-                @Suppress("DEPRECATION")
-                versionCode = 243635038
-                applicationInfo = synthesizeGmsApplicationInfo(pkgName)
-            }
-        }
-
-        private fun synthesizeGmsApplicationInfo(pkgName: String): ApplicationInfo {
-            return ApplicationInfo(context.applicationInfo).apply {
-                packageName = pkgName
-                name = "Google Play Services (Spatial TinyVM)"
-                enabled = true
-                metaData = android.os.Bundle().apply {
-                    putInt("com.google.android.gms.version", 243635000)
                 }
             }
         }

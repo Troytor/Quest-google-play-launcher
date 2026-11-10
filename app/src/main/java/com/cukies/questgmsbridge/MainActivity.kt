@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
 enum class SpatialTab(val label: String, val icon: ImageVector) {
     LIBRARY("App Space", Icons.Rounded.Apps),
     GMS_CORE("GMS Engine", Icons.Rounded.Memory),
-    IAP_VAULT("Play Billing & IAP", Icons.Rounded.VerifiedUser)
+    IAP_VAULT("Play Billing & Sync", Icons.Rounded.VerifiedUser)
 }
 
 data class InstalledQuestApp(
@@ -228,6 +228,7 @@ fun iOS27SpatialShell(initialTab: String) {
                                             putExtra("GUEST_PKG", loadedPlugin.packageName)
                                             putExtra("GUEST_APK", loadedPlugin.apkPath)
                                             putExtra("GUEST_CLASS", loadedPlugin.mainActivityClass)
+                                            putExtra("AUTO_LAUNCH", true)
                                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                         }
                                         context.startActivity(intent)
@@ -264,7 +265,7 @@ fun iOS27SpatialShell(initialTab: String) {
                             onRefresh = { refreshTelemetry() }
                         )
 
-                        SpatialTab.IAP_VAULT -> PlayBillingVaultScreen(apps = appsList)
+                        SpatialTab.IAP_VAULT -> PlayBillingVaultScreen()
                     }
                 }
             }
@@ -428,7 +429,7 @@ fun SpatialAppLibraryScreen(
                     onValueChange = onSearchChange,
                     placeholder = {
                         Text(
-                            "Search sideloaded Quest 3 games & apps (e.g. Polytopia)...",
+                            "Search sideloaded Quest 3 games & apps...",
                             color = Color.White.copy(alpha = 0.45f)
                         )
                     },
@@ -556,7 +557,7 @@ fun iOS27AppSquircleCard(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = if (isMounting) "Opening..." else "TinyVM Bridge",
+                        text = if (isMounting) "Launching..." else "Launch Bridged",
                         fontSize = 12.sp,
                         color = Color.White,
                         maxLines = 1
@@ -596,14 +597,14 @@ fun GmsEngineControlCenter(
             iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
                 Column(modifier = Modifier.padding(24.dp)) {
                     Text(
-                        text = "Official com.android.vending Play Store Host Active",
+                        text = "Universal Google Play Services & Play Store Host",
                         color = Color(0xFF30D158),
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "This app now claims the official Google Play Store package ID (com.android.vending) on your Quest 3. Any game (like Polytopia) calling InAppBillingService.BIND now connects directly to our GmsDaemonService and opens the iOS 27 Purchase Sheet when you tap Buy!",
+                        text = "Running as com.android.vending. Automatically intercepts Google Play Services authentication, LVL license verification, and InAppBillingService (v3–v7) across all installed apps and games on your Quest 3.",
                         color = Color.White.copy(alpha = 0.78f),
                         fontSize = 14.sp
                     )
@@ -654,17 +655,19 @@ fun GmsEngineControlCenter(
 }
 
 @Composable
-fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
+fun PlayBillingVaultScreen() {
     val context = LocalContext.current
-    val polytopiaPkg = apps.firstOrNull { it.packageName.contains("polytopia", ignoreCase = true) }?.packageName
-        ?: "air.com.midjiwan.polytopia"
-
-    var selectedPkg by remember { mutableStateOf(polytopiaPkg) }
-    var skuInput by remember { mutableStateOf("kickoo") }
+    var autoSyncEnabled by remember { mutableStateOf(true) }
     var savedEntries by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-    var discoveredSkus by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
 
-    fun loadSavedPurchases() {
+    fun loadVaultState() {
+        val configFile = File(context.filesDir, "virtual_gms/engine_config.json")
+        if (configFile.exists()) {
+            try {
+                autoSyncEnabled = JSONObject(configFile.readText()).optBoolean("autoSyncCatalogPurchases", true)
+            } catch (_: Throwable) {}
+        }
+
         val list = mutableListOf<Pair<String, String>>()
         val file = File(context.filesDir, "virtual_gms/account_purchases.json")
         if (file.exists()) {
@@ -682,184 +685,110 @@ fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
             } catch (_: Throwable) {}
         }
         savedEntries = list
-
-        val discList = mutableListOf<Pair<String, String>>()
-        val discFile = File(context.filesDir, "virtual_gms/discovered_skus.json")
-        if (discFile.exists()) {
-            try {
-                val root = JSONObject(discFile.readText())
-                val keys = root.keys()
-                while (keys.hasNext()) {
-                    val pkg = keys.next()
-                    val arr = root.optJSONArray(pkg) ?: continue
-                    for (i in 0 until arr.length()) {
-                        discList.add(pkg to arr.getString(i))
-                    }
-                }
-            } catch (_: Throwable) {}
-        }
-        discoveredSkus = discList
     }
 
-    LaunchedEffect(Unit) { loadSavedPurchases() }
+    LaunchedEffect(Unit) { loadVaultState() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
-            Column(modifier = Modifier.padding(22.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Google Play In-App Purchase & Polytopia Tribe Sync Vault",
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Click '1-Tap Sync Polytopia Tribes' below to pre-load all tribe entitlements into com.android.vending, OR click 'Buy' inside Polytopia to open the interactive Purchase Sheet!",
-                            color = Color.White.copy(alpha = 0.65f),
-                            fontSize = 12.sp
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Button(
-                        onClick = {
-                            GmsDaemonService.POLYTOPIA_TRIBE_SKUS.forEach { tribeSku ->
-                                savePurchaseEntitlement(context, polytopiaPkg, tribeSku)
-                            }
-                            if (discoveredSkus.isNotEmpty()) {
-                                discoveredSkus.forEach { (pkg, sku) ->
-                                    savePurchaseEntitlement(context, pkg, sku)
-                                }
-                            }
-                            loadSavedPurchases()
-                            Toast.makeText(
-                                context,
-                                "Synced all Polytopia Tribes & Discovered SKUs for $polytopiaPkg!",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("1-Tap Sync Polytopia Tribes")
-                    }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Seamless In-App Purchase & Entitlement Auto-Sync",
+                        color = Color.White,
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "When enabled, GmsDaemonService automatically discovers every SKU queried by any launched app or game at startup and syncs those entitlements to your active Google Play bridge session.",
+                        color = Color.White.copy(alpha = 0.68f),
+                        fontSize = 13.sp
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.width(18.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = selectedPkg,
-                        onValueChange = { selectedPkg = it },
-                        label = { Text("App Package Name", color = Color.White.copy(alpha = 0.6f)) },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF0A84FF),
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.25f)
-                        ),
-                        modifier = Modifier.weight(1f)
+                Switch(
+                    checked = autoSyncEnabled,
+                    onCheckedChange = { enabled ->
+                        autoSyncEnabled = enabled
+                        val gmsDir = File(context.filesDir, "virtual_gms").apply { mkdirs() }
+                        val configFile = File(gmsDir, "engine_config.json")
+                        val json = if (configFile.exists()) {
+                            try { JSONObject(configFile.readText()) } catch (_: Throwable) { JSONObject() }
+                        } else {
+                            JSONObject()
+                        }
+                        json.put("autoSyncCatalogPurchases", enabled)
+                        configFile.writeText(json.toString(2))
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = Color(0xFF30D158)
                     )
-
-                    OutlinedTextField(
-                        value = skuInput,
-                        onValueChange = { skuInput = it },
-                        label = { Text("Owned Product SKU ID", color = Color.White.copy(alpha = 0.6f)) },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF0A84FF),
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.25f)
-                        ),
-                        modifier = Modifier.weight(0.8f)
-                    )
-
-                    Button(
-                        onClick = {
-                            if (selectedPkg.isNotBlank() && skuInput.isNotBlank()) {
-                                savePurchaseEntitlement(context, selectedPkg.trim(), skuInput.trim())
-                                loadSavedPurchases()
-                                Toast.makeText(context, "Synced SKU '$skuInput'", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF30D158)),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.height(54.dp)
-                    ) {
-                        Icon(Icons.Rounded.AddCircle, contentDescription = null, tint = Color.Black)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Add SKU", color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-                }
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(savedEntries) { (pkg, sku) ->
-                iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp, fillAlpha = 0.07f) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(pkg, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Active Entitlement SKU: $sku", color = Color(0xFF30D158), fontSize = 12.sp)
-                        }
-                        IconButton(onClick = {
-                            removePurchaseEntitlement(context, pkg, sku)
-                            loadSavedPurchases()
-                        }) {
-                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Remove", tint = Color(0xFFFF453A))
+        Text(
+            text = "Auto-Discovered & Synced App Entitlements (${savedEntries.size}):",
+            color = Color.White.copy(alpha = 0.8f),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (savedEntries.isEmpty()) {
+            iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 20.dp, fillAlpha = 0.06f) {
+                Box(modifier = Modifier.padding(28.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "Launch any game or app—its queried Google Play SKUs and entitlements will automatically sync and appear here.",
+                        color = Color.White.copy(alpha = 0.55f),
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(savedEntries) { (pkg, sku) ->
+                    iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp, fillAlpha = 0.07f) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(pkg, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Synced Entitlement SKU: $sku", color = Color(0xFF30D158), fontSize = 12.sp)
+                            }
+                            IconButton(onClick = {
+                                removePurchaseEntitlement(context, pkg, sku)
+                                loadVaultState()
+                            }) {
+                                Icon(Icons.Rounded.DeleteOutline, contentDescription = "Remove", tint = Color(0xFFFF453A))
+                            }
                         }
                     }
                 }
             }
         }
     }
-}
-
-private fun savePurchaseEntitlement(context: Context, pkg: String, sku: String) {
-    val gmsDir = File(context.filesDir, "virtual_gms").apply { mkdirs() }
-    val file = File(gmsDir, "account_purchases.json")
-    val root = if (file.exists()) {
-        try { JSONObject(file.readText()) } catch (_: Throwable) { JSONObject() }
-    } else {
-        JSONObject()
-    }
-    val arr = root.optJSONArray(pkg) ?: JSONArray()
-    for (i in 0 until arr.length()) {
-        if (arr.getJSONObject(i).optString("productId") == sku) return
-    }
-    val entry = JSONObject().apply {
-        put("productId", sku)
-        put("purchaseTime", System.currentTimeMillis())
-        put("orderId", "GPA.3391-QUEST3-${System.currentTimeMillis() % 10000}")
-    }
-    arr.put(entry)
-    root.put(pkg, arr)
-    file.writeText(root.toString(2))
 }
 
 private fun removePurchaseEntitlement(context: Context, pkg: String, sku: String) {

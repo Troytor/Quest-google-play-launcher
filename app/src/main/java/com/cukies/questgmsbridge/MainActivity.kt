@@ -113,14 +113,10 @@ fun iOS27SpatialShell(initialTab: String) {
     var mountingAppPkg by remember { mutableStateOf<String?>(null) }
 
     var gmsProvider by remember { mutableStateOf<String?>(null) }
-    var stagedGmsExists by remember { mutableStateOf(false) }
-    var stagedPhoneskyExists by remember { mutableStateOf(false) }
     var ramUsageMb by remember { mutableStateOf(38) }
 
     fun refreshTelemetry() {
         gmsProvider = GmsBinderRouter.resolveInstalledGmsPackage(context.packageManager)
-        stagedGmsExists = File(context.filesDir, "virtual_gms/GmsCore.apk").exists()
-        stagedPhoneskyExists = File(context.filesDir, "virtual_gms/Phonesky.apk").exists()
         val memInfo = Debug.MemoryInfo()
         Debug.getMemoryInfo(memInfo)
         ramUsageMb = (memInfo.totalPss / 1024).coerceAtLeast(28)
@@ -228,17 +224,13 @@ fun iOS27SpatialShell(initialTab: String) {
                                     }
                                     mountingAppPkg = null
                                     if (loadedPlugin != null) {
-                                        try {
-                                            val intent = Intent(context, ProxySandboxActivity::class.java).apply {
-                                                putExtra("GUEST_PKG", loadedPlugin.packageName)
-                                                putExtra("GUEST_APK", loadedPlugin.apkPath)
-                                                putExtra("GUEST_CLASS", loadedPlugin.mainActivityClass)
-                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                            context.startActivity(intent)
-                                        } catch (t: Throwable) {
-                                            Toast.makeText(context, "Sandbox error: ${t.localizedMessage}", Toast.LENGTH_SHORT).show()
+                                        val intent = Intent(context, ProxySandboxActivity::class.java).apply {
+                                            putExtra("GUEST_PKG", loadedPlugin.packageName)
+                                            putExtra("GUEST_APK", loadedPlugin.apkPath)
+                                            putExtra("GUEST_CLASS", loadedPlugin.mainActivityClass)
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                         }
+                                        context.startActivity(intent)
                                     }
                                 }
                             },
@@ -252,7 +244,6 @@ fun iOS27SpatialShell(initialTab: String) {
                                     }
                                 } catch (_: Throwable) {}
 
-                                // If user clicked ReVanced GmsCore itself in the app grid, use our deep-link launcher!
                                 if (app.packageName.contains("gms", ignoreCase = true) ||
                                     app.packageName.contains("microg", ignoreCase = true)
                                 ) {
@@ -263,22 +254,12 @@ fun iOS27SpatialShell(initialTab: String) {
                                 if (launchIntent != null) {
                                     launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     context.startActivity(launchIntent)
-                                } else {
-                                    // Open via ProxySandboxActivity fallback for apps without a standard launcher icon
-                                    val intent = Intent(context, ProxySandboxActivity::class.java).apply {
-                                        putExtra("GUEST_PKG", app.packageName)
-                                        putExtra("GUEST_APK", app.sourceDir)
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    context.startActivity(intent)
                                 }
                             }
                         )
 
                         SpatialTab.GMS_CORE -> GmsEngineControlCenter(
                             gmsProvider = gmsProvider,
-                            stagedGmsExists = stagedGmsExists,
-                            stagedPhoneskyExists = stagedPhoneskyExists,
                             ramUsageMb = ramUsageMb,
                             onRefresh = { refreshTelemetry() }
                         )
@@ -374,9 +355,10 @@ fun iOS27TopStatusPill(
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = "Quest 3 • XR2 Gen 2 (arm64)",
-                    color = Color.White.copy(alpha = 0.55f),
-                    fontSize = 13.sp
+                    text = "Play Store Host: com.android.vending",
+                    color = Color(0xFF30D158),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
 
@@ -384,16 +366,13 @@ fun iOS27TopStatusPill(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
-                        .background(
-                            if (gmsProvider != null) Color(0xFF30D158).copy(alpha = 0.22f)
-                            else Color(0xFF0A84FF).copy(alpha = 0.22f)
-                        )
+                        .background(Color(0xFF0A84FF).copy(alpha = 0.22f))
                         .clickable { onRefresh() }
                         .padding(horizontal = 12.dp, vertical = 5.dp)
                 ) {
                     Text(
-                        text = if (gmsProvider != null) "GMS Linked: $gmsProvider" else "GMS: Internal TinyVM (:gms_daemon)",
-                        color = if (gmsProvider != null) Color(0xFF30D158) else Color(0xFF64D2FF),
+                        text = if (gmsProvider != null) "GMS: $gmsProvider" else "GMS: Built-In Host",
+                        color = Color(0xFF64D2FF),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -403,14 +382,12 @@ fun iOS27TopStatusPill(
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
                         .background(Color.White.copy(alpha = 0.08f))
-                        .clickable { onRefresh() }
                         .padding(horizontal = 12.dp, vertical = 5.dp)
                 ) {
                     Text(
                         text = "RAM: ${ramUsageMb}MB",
                         color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
+                        fontSize = 12.sp
                     )
                 }
             }
@@ -451,7 +428,7 @@ fun SpatialAppLibraryScreen(
                     onValueChange = onSearchChange,
                     placeholder = {
                         Text(
-                            "Search sideloaded Quest 3 apps...",
+                            "Search sideloaded Quest 3 games & apps (e.g. Polytopia)...",
                             color = Color.White.copy(alpha = 0.45f)
                         )
                     },
@@ -474,14 +451,6 @@ fun SpatialAppLibraryScreen(
         if (isLoading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Color(0xFF0A84FF))
-            }
-        } else if (apps.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "No sideloaded 2D/VR user apps found.",
-                    color = Color.White.copy(alpha = 0.6f),
-                    fontSize = 16.sp
-                )
             }
         } else {
             LazyVerticalGrid(
@@ -570,14 +539,6 @@ fun iOS27AppSquircleCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (app.splitCount > 0) {
-                        Text(
-                            text = "${app.splitCount} Split APKs + arm64",
-                            color = Color(0xFF64D2FF),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
                 }
             }
 
@@ -595,7 +556,7 @@ fun iOS27AppSquircleCard(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = if (isMounting) "Opening..." else "TinyVM Sandbox",
+                        text = if (isMounting) "Opening..." else "TinyVM Bridge",
                         fontSize = 12.sp,
                         color = Color.White,
                         maxLines = 1
@@ -622,8 +583,6 @@ fun iOS27AppSquircleCard(
 @Composable
 fun GmsEngineControlCenter(
     gmsProvider: String?,
-    stagedGmsExists: Boolean,
-    stagedPhoneskyExists: Boolean,
     ramUsageMb: Int,
     onRefresh: () -> Unit
 ) {
@@ -637,19 +596,15 @@ fun GmsEngineControlCenter(
             iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
                 Column(modifier = Modifier.padding(24.dp)) {
                     Text(
-                        text = "Google Play Services & ReVanced GmsCore Hub",
-                        color = Color.White,
+                        text = "Official com.android.vending Play Store Host Active",
+                        color = Color(0xFF30D158),
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = if (gmsProvider != null) {
-                            "Detected Installed GMS Provider: $gmsProvider. Click 'Sign In to Google Account' below to open its hidden microG / GmsCore Account & OAuth Settings."
-                        } else {
-                            "No external GmsCore APK detected yet. Click 'Download GmsCore OAuth APK' if you want live Google OAuth sign-in."
-                        },
-                        color = Color.White.copy(alpha = 0.72f),
+                        text = "This app now claims the official Google Play Store package ID (com.android.vending) on your Quest 3. Any game (like Polytopia) calling InAppBillingService.BIND now connects directly to our GmsDaemonService and opens the iOS 27 Purchase Sheet when you tap Buy!",
+                        color = Color.White.copy(alpha = 0.78f),
                         fontSize = 14.sp
                     )
 
@@ -695,60 +650,19 @@ fun GmsEngineControlCenter(
                 }
             }
         }
-
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                iOS27GlassSurface(modifier = Modifier.weight(1f), cornerRadius = 24.dp) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Text("Detected GmsCore / microG Package", color = Color(0xFF64D2FF), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = gmsProvider ?: "Internal Fallback (:gms_daemon)",
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "Automatically scans hidden microG/ReVanced activities (SettingsActivity & LoginActivity).",
-                            color = Color.White.copy(alpha = 0.55f),
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-
-                iOS27GlassSurface(modifier = Modifier.weight(1f), cornerRadius = 24.dp) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Text("Play Billing & LVL Daemon Status", color = Color(0xFF30D158), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "ONLINE (${ramUsageMb}MB RAM)",
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "Serving IInAppBillingService v3–v7 and Google Play entitlement restoration.",
-                            color = Color.White.copy(alpha = 0.55f),
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 
 @Composable
 fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
     val context = LocalContext.current
-    var selectedPkg by remember { mutableStateOf(apps.firstOrNull()?.packageName ?: "com.example.paidapp") }
-    var skuInput by remember { mutableStateOf("pro_unlock") }
+    val polytopiaPkg = apps.firstOrNull { it.packageName.contains("polytopia", ignoreCase = true) }?.packageName
+        ?: "air.com.midjiwan.polytopia"
+
+    var selectedPkg by remember { mutableStateOf(polytopiaPkg) }
+    var skuInput by remember { mutableStateOf("kickoo") }
     var savedEntries by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    var discoveredSkus by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
 
     fun loadSavedPurchases() {
         val list = mutableListOf<Pair<String, String>>()
@@ -768,6 +682,23 @@ fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
             } catch (_: Throwable) {}
         }
         savedEntries = list
+
+        val discList = mutableListOf<Pair<String, String>>()
+        val discFile = File(context.filesDir, "virtual_gms/discovered_skus.json")
+        if (discFile.exists()) {
+            try {
+                val root = JSONObject(discFile.readText())
+                val keys = root.keys()
+                while (keys.hasNext()) {
+                    val pkg = keys.next()
+                    val arr = root.optJSONArray(pkg) ?: continue
+                    for (i in 0 until arr.length()) {
+                        discList.add(pkg to arr.getString(i))
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+        discoveredSkus = discList
     }
 
     LaunchedEffect(Unit) { loadSavedPurchases() }
@@ -775,20 +706,54 @@ fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
     Column(modifier = Modifier.fillMaxSize()) {
         iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
             Column(modifier = Modifier.padding(22.dp)) {
-                Text(
-                    text = "Google Play In-App Purchase (IAP) Account Entitlement Vault",
-                    color = Color.White,
-                    fontSize = 19.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Register the SKUs owned by your Google account so :gms_daemon returns signed PURCHASED receipts whenever a bridged app queries getPurchases().",
-                    color = Color.White.copy(alpha = 0.6f),
-                    fontSize = 13.sp
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Google Play In-App Purchase & Polytopia Tribe Sync Vault",
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Click '1-Tap Sync Polytopia Tribes' below to pre-load all tribe entitlements into com.android.vending, OR click 'Buy' inside Polytopia to open the interactive Purchase Sheet!",
+                            color = Color.White.copy(alpha = 0.65f),
+                            fontSize = 12.sp
+                        )
+                    }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    Button(
+                        onClick = {
+                            GmsDaemonService.POLYTOPIA_TRIBE_SKUS.forEach { tribeSku ->
+                                savePurchaseEntitlement(context, polytopiaPkg, tribeSku)
+                            }
+                            if (discoveredSkus.isNotEmpty()) {
+                                discoveredSkus.forEach { (pkg, sku) ->
+                                    savePurchaseEntitlement(context, pkg, sku)
+                                }
+                            }
+                            loadSavedPurchases()
+                            Toast.makeText(
+                                context,
+                                "Synced all Polytopia Tribes & Discovered SKUs for $polytopiaPkg!",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("1-Tap Sync Polytopia Tribes")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -828,7 +793,7 @@ fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
                             if (selectedPkg.isNotBlank() && skuInput.isNotBlank()) {
                                 savePurchaseEntitlement(context, selectedPkg.trim(), skuInput.trim())
                                 loadSavedPurchases()
-                                Toast.makeText(context, "Synced SKU '$skuInput' for $selectedPkg", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Synced SKU '$skuInput'", Toast.LENGTH_SHORT).show()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF30D158)),
@@ -837,30 +802,30 @@ fun PlayBillingVaultScreen(apps: List<InstalledQuestApp>) {
                     ) {
                         Icon(Icons.Rounded.AddCircle, contentDescription = null, tint = Color.Black)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Sync Entitlement", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Text("Add SKU", color = Color.Black, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxSize()
         ) {
             items(savedEntries) { (pkg, sku) ->
-                iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 18.dp, fillAlpha = 0.07f) {
+                iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp, fillAlpha = 0.07f) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text(pkg, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Synced Google Play Entitlement SKU: $sku", color = Color(0xFF30D158), fontSize = 12.sp)
+                            Text(pkg, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Active Entitlement SKU: $sku", color = Color(0xFF30D158), fontSize = 12.sp)
                         }
                         IconButton(onClick = {
                             removePurchaseEntitlement(context, pkg, sku)
@@ -884,6 +849,9 @@ private fun savePurchaseEntitlement(context: Context, pkg: String, sku: String) 
         JSONObject()
     }
     val arr = root.optJSONArray(pkg) ?: JSONArray()
+    for (i in 0 until arr.length()) {
+        if (arr.getJSONObject(i).optString("productId") == sku) return
+    }
     val entry = JSONObject().apply {
         put("productId", sku)
         put("purchaseTime", System.currentTimeMillis())

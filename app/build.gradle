@@ -50,6 +50,9 @@ android {
             excludes.add('/META-INF/{AL2.0,LGPL2.1}')
             excludes.add('META-INF/DEPENDENCIES')
             excludes.add('META-INF/INDEX.LIST')
+            excludes.add('META-INF/LICENSE*')
+            excludes.add('META-INF/NOTICE*')
+            excludes.add('META-INF/*.kotlin_module')
         }
     }
 }
@@ -70,8 +73,11 @@ dependencies {
 
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
 
-    // Pure Kotlin ADB Client (Used to connect to 127.0.0.1:5555 like Quest Games Optimizer)
-    implementation 'dev.mobile:dadb:1.2.8'
+    // Pure Kotlin ADB Client (with transitive JUnit bloat excluded)
+    implementation('dev.mobile:dadb:1.2.8') {
+        exclude group: 'org.junit.jupiter'
+        exclude group: 'org.junit.platform'
+    }
 
     // Hidden API Reflection Unlock for Quest 3 Horizon OS
     implementation 'com.github.tiann:FreeReflection:3.2.0'

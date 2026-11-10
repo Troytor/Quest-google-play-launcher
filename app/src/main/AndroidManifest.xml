@@ -11,17 +11,6 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
-    <!-- Declare standard Play Store billing permission so client apps trust this package -->
-    <permission
-        android:name="com.android.vending.BILLING"
-        android:protectionLevel="normal" />
-    <permission
-        android:name="com.android.vending.CHECK_LICENSE"
-        android:protectionLevel="normal" />
-
-    <uses-permission android:name="com.android.vending.BILLING" />
-    <uses-permission android:name="com.android.vending.CHECK_LICENSE" />
-
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
 
     <application
@@ -34,11 +23,6 @@
         android:extractNativeLibs="true"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
 
-        <meta-data
-            android:name="com.google.android.gms.version"
-            android:value="243635000" />
-
-        <!-- Main iOS 27 Spatial Launcher -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -56,20 +40,13 @@
             </intent-filter>
         </activity>
 
-        <!-- Interactive Google Play In-App Purchase Sheet (Triggered when you click "Buy" in Polytopia) -->
         <activity
             android:name=".BillingPurchaseSheetActivity"
             android:exported="true"
             android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
-            android:resizeableActivity="true">
-            <intent-filter>
-                <action android:name="com.android.vending.billing.PURCHASE" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
+            android:resizeableActivity="true" />
 
-        <!-- TinyVM Spatial Bridge Console -->
         <activity
             android:name=".ProxySandboxActivity"
             android:exported="true"
@@ -81,7 +58,6 @@
                 android:defaultHeight="800dp" />
         </activity>
 
-        <!-- Official Play Store Billing (v3-v7) & Licensing Responder Service -->
         <service
             android:name=".GmsDaemonService"
             android:exported="true"
@@ -89,13 +65,12 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="google_play_billing_and_gms_host" />
+                android:value="google_play_adb_and_virtual_os_host" />
             <intent-filter>
                 <action android:name="com.android.vending.billing.InAppBillingService.BIND" />
                 <action android:name="com.android.vending.licensing.ILicensingService" />
                 <action android:name="com.google.android.gms.auth.service.START" />
                 <action android:name="com.google.android.gms.games.service.START" />
-                <action android:name="com.google.android.gms.chimera.container.CONTAINER_UPDATED" />
             </intent-filter>
         </service>
 

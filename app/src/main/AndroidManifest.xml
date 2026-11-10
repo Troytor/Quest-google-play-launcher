@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- Quest 3 Spatial Panel Compatibility -->
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
+
+    <application
+        android:name=".BridgeApp"
+        android:allowBackup="true"
+        android:hardwareAccelerated="true"
+        android:largeHeap="true"
+        android:label="SpatialGMS OS 27"
+        android:supportsRtl="true"
+        android:extractNativeLibs="true"
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+
+        <!-- iOS 27 Spatial Launcher Panel optimized for Quest 3 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
+            android:resizeableActivity="true">
+            <layout
+                android:defaultWidth="1280dp"
+                android:defaultHeight="820dp"
+                android:minWidth="800dp"
+                android:minHeight="540dp" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.oculus.intent.category.2D" />
+            </intent-filter>
+        </activity>
+
+        <!-- Sandboxed Guest App Container (:sandbox_p0) -->
+        <activity
+            android:name=".ProxySandboxActivity"
+            android:process=":sandbox_p0"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
+            android:resizeableActivity="true">
+            <layout
+                android:defaultWidth="1280dp"
+                android:defaultHeight="800dp" />
+        </activity>
+
+        <!-- Headless Google Play Dependencies & Billing Daemon (:gms_daemon) -->
+        <service
+            android:name=".GmsDaemonService"
+            android:process=":gms_daemon"
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="virtual_gms_and_play_billing_engine" />
+            <intent-filter>
+                <action android:name="com.android.vending.billing.InAppBillingService.BIND" />
+                <action android:name="com.android.vending.licensing.ILicensingService" />
+                <action android:name="com.google.android.gms.auth.service.START" />
+                <action android:name="com.google.android.gms.games.service.START" />
+                <action android:name="com.google.android.gms.chimera.container.CONTAINER_UPDATED" />
+            </intent-filter>
+        </service>
+
+    </application>
+</manifest>

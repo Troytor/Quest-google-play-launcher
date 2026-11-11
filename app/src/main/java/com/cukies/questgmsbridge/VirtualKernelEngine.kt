@@ -2,66 +2,65 @@ package com.cukies.questgmsbridge
 
 import android.app.Instrumentation
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
-import android.view.KeyEvent
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
 import java.net.Inet4Address
-import java.net.URL
 
 object VirtualKernelEngine {
 
-    data class VirtualOsState(
-        val vmMounted: Boolean,
-        val deviceProfile: String,
-        val networkBridged: Boolean,
-        val questLocalIp: String,
-        val dnsServers: String,
-        val googlePlayReachable: Boolean,
-        val latencyMs: Long,
-        val mountedGmsApks: Int
+    const val MAX_RUNNING_WINDOWS = 3
+
+    data class VmAppEntry(
+        val packageName: String,
+        val label: String,
+        val category: String,
+        val versionName: String,
+        val sizeMb: String,
+        val iconColorHex: Long,
+        val apkDownloadUrl: String = ""
     )
 
-    @Volatile
-    var currentNetworkState = VirtualOsState(
-        vmMounted = false,
-        deviceProfile = "Google Pixel 8 Pro (husky • Certified VM)",
-        networkBridged = false,
-        questLocalIp = "Binding Quest Wi-Fi...",
-        dnsServers = "8.8.8.8, 8.8.4.4",
-        googlePlayReachable = false,
-        latencyMs = 0L,
-        mountedGmsApks = 3
+    data class RunningVmWindow(
+        val slotIndex: Int, // 0, 1, or 2
+        val app: VmAppEntry,
+        val isMinimizedInDock: Boolean
     )
-        private set
 
-    private val networkInstrumentation = Instrumentation()
+    // Reactive state for Compose UI animations
+    val isGoogleSignedIn = mutableStateOf(false)
+    val googleAccountEmail = mutableStateOf("")
+    val questWifiIp = mutableStateOf("Connecting Quest Wi-Fi...")
+    val isWifiOnline = mutableStateOf(false)
 
-    /**
-     * Mounts the self-contained virtual Android OS root filesystem (/virtual_nand/system/...)
-     * and applies certified Google Play device fingerprint properties inside the VM process.
-     */
+    // Apps installed inside the VM Home Screen (Starts empty; only Play Store is shown initially!)
+    val vmInstalledApps = mutableStateListOf<VmAppEntry>()
+
+    // Up to 3 concurrent apps running in separate windows or minimized in the Fluid Pill Dock
+    val activeVmWindows = mutableStateListOf<RunningVmWindow>()
+
+    private val instrumentation = Instrumentation()
+
     fun bootVirtualAndroidOs(context: Context) {
         try {
             val nandRoot = File(context.filesDir, "virtual_nand").apply {
                 File(this, "system/priv-app/GmsCore").mkdirs()
                 File(this, "system/priv-app/Phonesky").mkdirs()
-                File(this, "system/priv-app/GoogleServicesFramework").mkdirs()
-                File(this, "system/priv-app/PlayGames").mkdirs()
-                File(this, "system/etc/permissions").mkdirs()
-                File(this, "system/etc/security/cacerts").mkdirs()
-                File(this, "data/data/com.google.android.gms").mkdirs()
-                File(this, "data/data/com.android.vending").mkdirs()
+                File(this, "data/app").mkdirs()
             }
 
-            // Write certified virtual /system/build.prop so GMS inside the VM sees a certified Android OS
             val buildProp = File(nandRoot, "system/build.prop")
             if (!buildProp.exists()) {
                 buildProp.writeText(
@@ -71,47 +70,26 @@ object VirtualKernelEngine {
                     ro.product.device=husky
                     ro.product.model=Pixel 8 Pro
                     ro.product.manufacturer=Google
-                    ro.build.fingerprint=google/husky/husky:14/UQ1A.240205.004/11269751:user/release-keys
-                    ro.build.tags=release-keys
-                    ro.build.type=user
+                    ro.build.version.release=14
                     ro.com.google.gmsversion=14_202405
                     """.trimIndent()
                 )
             }
 
-            // Write virtual /system/etc/hosts with direct Google Play API routing
-            val hostsFile = File(nandRoot, "system/etc/hosts")
-            if (!hostsFile.exists()) {
-                hostsFile.writeText(
-                    """
-                    127.0.0.1 localhost
-                    ::1 ip6-localhost
-                    """.trimIndent()
-                )
-            }
-
-            // Bind the Virtual Machine directly to the Quest 3's active Wi-Fi Network Interface
+            loadPersistedVmState(context)
             bindVirtualOsToQuestNetwork(context)
-
-            currentNetworkState = currentNetworkState.copy(vmMounted = true)
-            Log.i(BridgeApp.TAG, "Mini-GBox Virtual Android OS mounted & bound to Quest 3 network.")
         } catch (t: Throwable) {
-            Log.e(BridgeApp.TAG, "Virtual OS boot error", t)
+            Log.e(BridgeApp.TAG, "VM boot error", t)
         }
     }
 
-    /**
-     * Binds the entire Virtual Machine process tree directly to the Quest 3's active hardware
-     * Wi-Fi network so all Google Play Services, OAuth, and Game sockets route natively.
-     */
     fun bindVirtualOsToQuestNetwork(context: Context) {
         try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
-
             val activeNet = cm.activeNetwork
             if (activeNet != null) {
                 cm.bindProcessToNetwork(activeNet)
-                updateNetworkTelemetryFromLink(cm, activeNet)
+                updateLinkInfo(cm, activeNet)
             }
 
             val req = NetworkRequest.Builder()
@@ -121,85 +99,164 @@ object VirtualKernelEngine {
             cm.registerNetworkCallback(req, object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     cm.bindProcessToNetwork(network)
-                    updateNetworkTelemetryFromLink(cm, network)
+                    updateLinkInfo(cm, network)
                 }
 
                 override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-                    updateNetworkTelemetryFromLink(cm, network)
+                    updateLinkInfo(cm, network)
                 }
             })
-        } catch (t: Throwable) {
-            Log.w(BridgeApp.TAG, "Network bridge registration note: ${t.message}")
-        }
+        } catch (_: Throwable) {}
     }
 
-    private fun updateNetworkTelemetryFromLink(cm: ConnectivityManager, network: Network) {
+    private fun updateLinkInfo(cm: ConnectivityManager, network: Network) {
         try {
             val props = cm.getLinkProperties(network)
             val ipv4 = props?.linkAddresses
                 ?.map { it.address }
                 ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
-                ?.hostAddress ?: "Quest Wi-Fi NAT"
-
-            val dns = props?.dnsServers
-                ?.mapNotNull { it.hostAddress }
-                ?.take(2)
-                ?.joinToString(", ")
-                ?.ifBlank { "8.8.8.8, 1.1.1.1" } ?: "8.8.8.8, 1.1.1.1"
-
-            currentNetworkState = currentNetworkState.copy(
-                vmMounted = true,
-                networkBridged = true,
-                questLocalIp = ipv4,
-                dnsServers = dns
-            )
+                ?.hostAddress ?: "Quest Wi-Fi Online"
+            questWifiIp.value = ipv4
+            isWifiOnline.value = true
         } catch (_: Throwable) {}
     }
 
-    /**
-     * Verifies live HTTPS socket routing from inside the Virtual Machine over the Quest 3's Wi-Fi
-     * directly to Google Play's production checkin/billing endpoint (android.clients.google.com).
-     */
-    suspend fun verifyLiveGooglePlayNetworkBridge(context: Context): VirtualOsState = withContext(Dispatchers.IO) {
-        bindVirtualOsToQuestNetwork(context)
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        val activeNet = cm?.activeNetwork
+    fun saveGoogleAccountLogin(context: Context, email: String) {
+        isGoogleSignedIn.value = true
+        googleAccountEmail.value = email
+        persistVmState(context)
+    }
 
-        val start = System.currentTimeMillis()
-        var reachable = false
-        try {
-            val url = URL("https://android.clients.google.com/generate_204")
-            val conn = (activeNet?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
-            conn.connectTimeout = 4000
-            conn.readTimeout = 4000
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "GoogleLoginService/1.3 (husky UQ1A.240205.004)")
-            val code = conn.responseCode
-            reachable = (code in 200..399 || code == 404)
-            conn.disconnect()
-        } catch (t: Throwable) {
-            Log.w(BridgeApp.TAG, "Google Play endpoint ping note: ${t.message}")
+    fun installAppIntoVmHomeScreen(context: Context, app: VmAppEntry) {
+        if (vmInstalledApps.none { it.packageName == app.packageName }) {
+            vmInstalledApps.add(app)
+            persistVmState(context)
         }
-        val rtt = (System.currentTimeMillis() - start).coerceAtLeast(1L)
+    }
 
-        currentNetworkState = currentNetworkState.copy(
-            vmMounted = true,
-            networkBridged = activeNet != null,
-            googlePlayReachable = reachable,
-            latencyMs = rtt
-        )
-        return@withContext currentNetworkState
+    fun uninstallAppFromVm(context: Context, packageName: String) {
+        vmInstalledApps.removeAll { it.packageName == packageName }
+        activeVmWindows.removeAll { it.app.packageName == packageName }
+        persistVmState(context)
     }
 
     /**
-     * Dispatches hardware key events (e.g. KEYCODE_BACK) directly inside the Virtual Machine's
-     * Instrumentation pipeline without requiring external ADB.
+     * Opens or restores an app in one of the 3 concurrent VM Multi-Window slots.
+     * If 3 apps are already running, returns null so the UI can notify the user to minimize/close one.
      */
+    fun openOrRestoreVmWindow(context: Context, app: VmAppEntry): Int? {
+        val existingIdx = activeVmWindows.indexOfFirst { it.app.packageName == app.packageName }
+        if (existingIdx != -1) {
+            val updated = activeVmWindows[existingIdx].copy(isMinimizedInDock = false)
+            activeVmWindows[existingIdx] = updated
+            spawnSeparateSpatialWindowIntent(context, updated.slotIndex, app)
+            return updated.slotIndex
+        }
+
+        if (activeVmWindows.size >= MAX_RUNNING_WINDOWS) {
+            return null // All 3 window slots are occupied
+        }
+
+        val usedSlots = activeVmWindows.map { it.slotIndex }.toSet()
+        val freeSlot = (0 until MAX_RUNNING_WINDOWS).firstOrNull { it !in usedSlots } ?: 0
+
+        val newWin = RunningVmWindow(
+            slotIndex = freeSlot,
+            app = app,
+            isMinimizedInDock = false
+        )
+        activeVmWindows.add(newWin)
+        spawnSeparateSpatialWindowIntent(context, freeSlot, app)
+        return freeSlot
+    }
+
+    fun minimizeWindowToFluidDock(packageName: String) {
+        val idx = activeVmWindows.indexOfFirst { it.app.packageName == packageName }
+        if (idx != -1) {
+            activeVmWindows[idx] = activeVmWindows[idx].copy(isMinimizedInDock = true)
+        }
+    }
+
+    fun closeVmWindowSlot(packageName: String) {
+        activeVmWindows.removeAll { it.app.packageName == packageName }
+    }
+
+    private fun spawnSeparateSpatialWindowIntent(context: Context, slot: Int, app: VmAppEntry) {
+        val pm = context.packageManager
+        val sourceApk = try {
+            pm.getApplicationInfo(app.packageName, 0).sourceDir ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+
+        val winIntent = Intent(context, ProxySandboxActivity::class.java).apply {
+            putExtra("VM_SLOT_INDEX", slot)
+            putExtra("GUEST_PKG", app.packageName)
+            putExtra("GUEST_LABEL", app.label)
+            putExtra("GUEST_APK", sourceApk)
+            putExtra("ICON_COLOR", app.iconColorHex)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT
+            )
+        }
+        context.startActivity(winIntent)
+    }
+
     suspend fun dispatchVirtualKeyEvent(keyCode: Int) = withContext(Dispatchers.IO) {
         try {
-            networkInstrumentation.sendKeyDownUpSync(keyCode)
-        } catch (t: Throwable) {
-            Log.w(BridgeApp.TAG, "Virtual key dispatch note: ${t.message}")
-        }
+            instrumentation.sendKeyDownUpSync(keyCode)
+        } catch (_: Throwable) {}
+    }
+
+    private fun persistVmState(context: Context) {
+        try {
+            val file = File(context.filesDir, "virtual_nand/vm_home_state.json")
+            val root = JSONObject().apply {
+                put("signedIn", isGoogleSignedIn.value)
+                put("email", googleAccountEmail.value)
+                val appsArr = JSONArray()
+                vmInstalledApps.forEach { app ->
+                    appsArr.put(JSONObject().apply {
+                        put("packageName", app.packageName)
+                        put("label", app.label)
+                        put("category", app.category)
+                        put("versionName", app.versionName)
+                        put("sizeMb", app.sizeMb)
+                        put("iconColorHex", app.iconColorHex)
+                        put("apkDownloadUrl", app.apkDownloadUrl)
+                    })
+                }
+                put("installedApps", appsArr)
+            }
+            file.writeText(root.toString(2))
+        } catch (_: Throwable) {}
+    }
+
+    private fun loadPersistedVmState(context: Context) {
+        try {
+            val file = File(context.filesDir, "virtual_nand/vm_home_state.json")
+            if (!file.exists()) return
+            val root = JSONObject(file.readText())
+            isGoogleSignedIn.value = root.optBoolean("signedIn", false)
+            googleAccountEmail.value = root.optString("email", "")
+            val arr = root.optJSONArray("installedApps") ?: return
+            vmInstalledApps.clear()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                vmInstalledApps.add(
+                    VmAppEntry(
+                        packageName = o.optString("packageName"),
+                        label = o.optString("label"),
+                        category = o.optString("category", "App"),
+                        versionName = o.optString("versionName", "1.0"),
+                        sizeMb = o.optString("sizeMb", "45 MB"),
+                        iconColorHex = o.optLong("iconColorHex", 0xFF0A84FF),
+                        apkDownloadUrl = o.optString("apkDownloadUrl", "")
+                    )
+                )
+            }
+        } catch (_: Throwable) {}
     }
 }

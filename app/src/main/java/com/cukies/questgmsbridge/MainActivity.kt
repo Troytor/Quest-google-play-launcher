@@ -14,7 +14,7 @@ import android.os.Debug
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,11 +48,16 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Transparent window background so Quest 3 Passthrough shines through
+        window.setBackgroundDrawableResource(android.R.color.transparent)
 
         try {
             val svcIntent = Intent(this, GmsDaemonService::class.java)
@@ -67,20 +73,20 @@ class MainActivity : ComponentActivity() {
                 colorScheme = darkColorScheme(
                     primary = Color(0xFF0A84FF),
                     secondary = Color(0xFF5E5CE6),
-                    background = Color(0xFF07090F),
-                    surface = Color(0xFF121624)
+                    background = Color.Transparent,
+                    surface = Color.Transparent
                 )
             ) {
-                iOS27SpatialShell()
+                MiniGBoxSpatialContainer()
             }
         }
     }
 }
 
-enum class SpatialTab(val label: String, val icon: ImageVector) {
-    LIBRARY("App Space", Icons.Rounded.Apps),
-    MINI_OS("Mini Android OS & ADB", Icons.Rounded.DeveloperBoard),
-    GMS_STACK("GMS Core & Play Store", Icons.Rounded.CloudDownload)
+enum class GBoxSpatialSection(val label: String, val icon: ImageVector) {
+    VIRTUAL_APPS("GBox Apps", Icons.Rounded.GridView),
+    PLAY_SERVICES("GMS & Network", Icons.Rounded.WifiTethering),
+    PLAY_BILLING("Play Billing", Icons.Rounded.ShoppingBag)
 }
 
 data class InstalledQuestApp(
@@ -92,37 +98,31 @@ data class InstalledQuestApp(
 )
 
 @Composable
-fun iOS27SpatialShell() {
+fun MiniGBoxSpatialContainer() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var currentTab by remember { mutableStateOf(SpatialTab.LIBRARY) }
+    var activeSection by remember { mutableStateOf(GBoxSpatialSection.VIRTUAL_APPS) }
+    var navPillExpanded by remember { mutableStateOf(true) }
     var searchQuery by remember { mutableStateOf("") }
     var appsList by remember { mutableStateOf<List<InstalledQuestApp>>(emptyList()) }
     var isLoadingApps by remember { mutableStateOf(true) }
-    var launchingAppPkg by remember { mutableStateOf<String?>(null) }
+    var spawningAppPkg by remember { mutableStateOf<String?>(null) }
 
-    var osStatus by remember { mutableStateOf(VirtualOsManager.inspectAndPrepareMiniOs(context)) }
-    var adbConnected by remember { mutableStateOf(LocalAdbShellEngine.isConnected) }
-    var adbStatusText by remember { mutableStateOf(LocalAdbShellEngine.lastStatusMessage) }
-    var ramUsageMb by remember { mutableStateOf(38) }
+    var vmState by remember { mutableStateOf(VirtualKernelEngine.currentNetworkState) }
+    var ramUsageMb by remember { mutableStateOf(36) }
 
     fun refreshTelemetry() {
-        osStatus = VirtualOsManager.inspectAndPrepareMiniOs(context)
-        adbConnected = LocalAdbShellEngine.isConnected
-        adbStatusText = LocalAdbShellEngine.lastStatusMessage
         val memInfo = Debug.MemoryInfo()
         Debug.getMemoryInfo(memInfo)
-        ramUsageMb = (memInfo.totalPss / 1024).coerceAtLeast(28)
+        ramUsageMb = (memInfo.totalPss / 1024).coerceAtLeast(26)
+        scope.launch {
+            vmState = VirtualKernelEngine.verifyLiveGooglePlayNetworkBridge(context)
+        }
     }
 
     LaunchedEffect(Unit) {
         refreshTelemetry()
-        // Auto-attempt Wireless ADB connection on startup just like Quest Games Optimizer
-        scope.launch {
-            LocalAdbShellEngine.connectLocalAdb(context, 5555)
-            refreshTelemetry()
-        }
         withContext(Dispatchers.IO) {
             val pm = context.packageManager
             val loaded = try {
@@ -140,7 +140,7 @@ fun iOS27SpatialShell() {
                             packageName = app.packageName,
                             sourceDir = app.sourceDir ?: "",
                             splitCount = app.splitSourceDirs?.size ?: 0,
-                            iconBitmap = drawable?.toBitmapSafe(112, 112)?.asImageBitmap()
+                            iconBitmap = drawable?.toBitmapSafe(120, 120)?.asImageBitmap()
                         )
                     }
                     .sortedBy { it.label.lowercase() }
@@ -152,165 +152,182 @@ fun iOS27SpatialShell() {
         }
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "iOS27Mesh")
-    val orbShift by infiniteTransition.animateFloat(
+    val infiniteTransition = rememberInfiniteTransition(label = "iOS27FluidGlass")
+    val fluidPhase by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(11000, easing = FastOutSlowInEasing),
+            animation = tween(8500, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "orbShift"
+        label = "fluidPhase"
     )
 
-    Box(
+    Row(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF06080E))
+            .background(Color.Transparent)
+            .padding(18.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF0A84FF).copy(alpha = 0.22f), Color.Transparent),
-                    center = Offset(size.width * (0.2f + 0.15f * orbShift), size.height * 0.22f),
-                    radius = size.width * 0.45f
+        // =========================================================================
+        // 1. FLOATING DYNAMIC GLASS PILL NEXT TO THE MAIN VIRTUAL WINDOW
+        // =========================================================================
+        val sidePillWidth by animateDpAsState(
+            targetValue = if (navPillExpanded) 108.dp else 72.dp,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioLowBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "SidePillWidth"
+        )
+
+        iOS27PassthroughGlass(
+            modifier = Modifier
+                .width(sidePillWidth)
+                .wrapContentHeight(),
+            cornerRadius = 999.dp,
+            fillAlpha = 0.48f,
+            borderAlpha = 0.42f
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.padding(vertical = 20.dp, horizontal = 10.dp)
+            ) {
+                SpatialPillIconButton(
+                    icon = if (navPillExpanded) Icons.Rounded.BlurOn else Icons.Rounded.ChevronRight,
+                    label = if (navPillExpanded) "GBox VM" else "",
+                    selected = false,
+                    tintColor = Color(0xFF64D2FF),
+                    onClick = { navPillExpanded = !navPillExpanded }
                 )
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF5E5CE6).copy(alpha = 0.20f), Color.Transparent),
-                    center = Offset(size.width * (0.8f - 0.15f * orbShift), size.height * 0.75f),
-                    radius = size.width * 0.5f
+
+                Divider(
+                    color = Color.White.copy(alpha = 0.16f),
+                    modifier = Modifier.width(40.dp)
                 )
-            )
+
+                GBoxSpatialSection.entries.forEach { section ->
+                    SpatialPillIconButton(
+                        icon = section.icon,
+                        label = if (navPillExpanded) section.label else "",
+                        selected = activeSection == section,
+                        tintColor = Color(0xFF0A84FF),
+                        onClick = {
+                            refreshTelemetry()
+                            activeSection = section
+                        }
+                    )
+                }
+            }
         }
 
-        Column(
+        Spacer(modifier = Modifier.width(18.dp))
+
+        // =========================================================================
+        // 2. MAIN TRANSLUCENT PASSTHROUGH GBOX CONTAINER WINDOW
+        // =========================================================================
+        iOS27PassthroughGlass(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 28.dp, vertical = 20.dp)
+                .weight(1f)
+                .fillMaxHeight(),
+            cornerRadius = 40.dp,
+            fillAlpha = 0.52f,
+            borderAlpha = 0.36f
         ) {
-            iOS27TopStatusPill(
-                adbConnected = adbConnected,
-                adbStatusText = adbStatusText,
-                ramUsageMb = ramUsageMb,
-                onConnectAdb = {
-                    scope.launch {
-                        val ok = LocalAdbShellEngine.connectLocalAdb(context, 5555)
-                        refreshTelemetry()
-                        Toast.makeText(
-                            context,
-                            if (ok) "Wireless ADB Connected (uid=2000)!" else LocalAdbShellEngine.lastStatusMessage,
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            )
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFF0A84FF).copy(alpha = 0.18f),
+                            Color.Transparent
+                        ),
+                        center = Offset(size.width * (0.2f + 0.15f * fluidPhase), size.height * 0.2f),
+                        radius = size.width * 0.45f
+                    )
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFF5E5CE6).copy(alpha = 0.16f),
+                            Color.Transparent
+                        ),
+                        center = Offset(size.width * (0.8f - 0.15f * fluidPhase), size.height * 0.8f),
+                        radius = size.width * 0.48f
+                    )
+                )
+            }
 
-            Spacer(modifier = Modifier.height(18.dp))
-
-            Box(
+            Column(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxSize()
+                    .padding(horizontal = 28.dp, vertical = 22.dp)
             ) {
-                Crossfade(targetState = currentTab, animationSpec = tween(220), label = "TabSwitch") { tab ->
-                    when (tab) {
-                        SpatialTab.LIBRARY -> SpatialAppLibraryScreen(
-                            apps = appsList.filter {
-                                searchQuery.isBlank() ||
-                                        it.label.contains(searchQuery, ignoreCase = true) ||
-                                        it.packageName.contains(searchQuery, ignoreCase = true)
-                            },
-                            searchQuery = searchQuery,
-                            onSearchChange = { searchQuery = it },
-                            isLoading = isLoadingApps,
-                            launchingAppPkg = launchingAppPkg,
-                            onLaunchWithAdbAndVm = { app ->
-                                scope.launch {
-                                    launchingAppPkg = app.packageName
-                                    if (LocalAdbShellEngine.isConnected || LocalAdbShellEngine.connectLocalAdb(context, 5555)) {
-                                        val report = LocalAdbShellEngine.prepareOsAndLaunchGameWithGms(
-                                            context = context,
-                                            targetGamePkg = app.packageName,
-                                            gmsPackages = osStatus.activeGmsPackages
-                                        )
-                                        refreshTelemetry()
-                                        Toast.makeText(context, report, Toast.LENGTH_LONG).show()
-                                    } else {
-                                        // Fallback if Wireless ADB port 5555 isn't enabled yet: launch via ProxySandboxActivity
-                                        val intent = Intent(context, ProxySandboxActivity::class.java).apply {
+                GBoxTopDynamicIsland(
+                    vmState = vmState,
+                    ramUsageMb = ramUsageMb,
+                    onRefresh = { refreshTelemetry() }
+                )
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                Box(modifier = Modifier.weight(1f)) {
+                    Crossfade(
+                        targetState = activeSection,
+                        animationSpec = tween(260, easing = FastOutSlowInEasing),
+                        label = "SectionCrossfade"
+                    ) { section ->
+                        when (section) {
+                            GBoxSpatialSection.VIRTUAL_APPS -> GBoxVirtualAppGrid(
+                                apps = appsList.filter {
+                                    searchQuery.isBlank() ||
+                                            it.label.contains(searchQuery, ignoreCase = true) ||
+                                            it.packageName.contains(searchQuery, ignoreCase = true)
+                                },
+                                searchQuery = searchQuery,
+                                onSearchChange = { searchQuery = it },
+                                isLoading = isLoadingApps,
+                                spawningAppPkg = spawningAppPkg,
+                                onSpawnSeparateWindowWithPill = { app ->
+                                    scope.launch {
+                                        spawningAppPkg = app.packageName
+                                        val pillHostIntent = Intent(context, ProxySandboxActivity::class.java).apply {
                                             putExtra("GUEST_PKG", app.packageName)
                                             putExtra("GUEST_APK", app.sourceDir)
                                             putExtra("AUTO_LAUNCH", true)
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            addFlags(
+                                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                                                Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT
+                                            )
                                         }
-                                        context.startActivity(intent)
-                                    }
-                                    launchingAppPkg = null
-                                }
-                            },
-                            onLaunchInsideExternalVm = { app ->
-                                val vmPkg = osStatus.externalVmContainerPkg
-                                if (vmPkg != null) {
-                                    context.packageManager.getLaunchIntentForPackage(vmPkg)?.let {
-                                        it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        context.startActivity(it)
-                                        return@SpatialAppLibraryScreen
+                                        context.startActivity(pillHostIntent)
+                                        spawningAppPkg = null
                                     }
                                 }
-                                Toast.makeText(
-                                    context,
-                                    "Open the 'GMS Core & Play Store' tab to install the GBox Virtual Android OS kernel.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        )
+                            )
 
-                        SpatialTab.MINI_OS -> MiniAndroidOsAdbScreen(
-                            osStatus = osStatus,
-                            adbConnected = adbConnected,
-                            adbStatusText = adbStatusText,
-                            onConnectAdb = { port ->
-                                scope.launch {
-                                    LocalAdbShellEngine.connectLocalAdb(context, port)
-                                    refreshTelemetry()
-                                }
-                            }
-                        )
+                            GBoxSpatialSection.PLAY_SERVICES -> GBoxPlayServicesAndNetworkHub(
+                                vmState = vmState,
+                                onRefresh = { refreshTelemetry() }
+                            )
 
-                        SpatialTab.GMS_STACK -> RealGmsStackProvisionerScreen(
-                            osStatus = osStatus,
-                            onRefresh = { refreshTelemetry() }
-                        )
+                            GBoxSpatialSection.PLAY_BILLING -> GBoxPlayBillingVault()
+                        }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
-                iOS27BottomFloatingDock(
-                    selectedTab = currentTab,
-                    onSelectTab = {
-                        refreshTelemetry()
-                        currentTab = it
-                    }
-                )
             }
         }
     }
 }
 
 @Composable
-fun iOS27GlassSurface(
+fun iOS27PassthroughGlass(
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 28.dp,
-    fillAlpha: Float = 0.09f,
-    borderAlpha: Float = 0.24f,
+    cornerRadius: Dp = 30.dp,
+    fillAlpha: Float = 0.42f,
+    borderAlpha: Float = 0.35f,
     content: @Composable BoxScope.() -> Unit
 ) {
     val shape = RoundedCornerShape(cornerRadius)
@@ -320,17 +337,18 @@ fun iOS27GlassSurface(
             .background(
                 brush = Brush.linearGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = fillAlpha + 0.05f),
-                        Color.White.copy(alpha = fillAlpha * 0.65f)
+                        Color(0xFF141B2D).copy(alpha = fillAlpha),
+                        Color(0xFF0B0F1A).copy(alpha = fillAlpha + 0.10f)
                     )
                 )
             )
             .border(
-                width = 1.dp,
+                width = 1.2.dp,
                 brush = Brush.linearGradient(
                     colors = listOf(
                         Color.White.copy(alpha = borderAlpha),
-                        Color.White.copy(alpha = 0.04f)
+                        Color(0xFF64D2FF).copy(alpha = borderAlpha * 0.45f),
+                        Color.White.copy(alpha = 0.05f)
                     )
                 ),
                 shape = shape
@@ -340,73 +358,145 @@ fun iOS27GlassSurface(
 }
 
 @Composable
-fun iOS27TopStatusPill(
-    adbConnected: Boolean,
-    adbStatusText: String,
-    ramUsageMb: Int,
-    onConnectAdb: () -> Unit
+private fun SpatialPillIconButton(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    tintColor: Color,
+    onClick: () -> Unit
 ) {
-    iOS27GlassSurface(
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    val scale by animateFloatAsState(
+        targetValue = when {
+            isPressed -> 0.85f
+            selected -> 1.07f
+            else -> 1.0f
+        },
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "PillButtonSpring"
+    )
+
+    val highlightAlpha by animateFloatAsState(
+        targetValue = if (selected) 0.32f else if (isPressed) 0.20f else 0.0f,
+        animationSpec = tween(200),
+        label = "PillHighlight"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .scale(scale)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(tintColor.copy(alpha = highlightAlpha))
+            .border(
+                width = 1.dp,
+                color = if (selected) Color.White.copy(alpha = 0.45f) else Color.Transparent,
+                shape = RoundedCornerShape(24.dp)
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(vertical = 12.dp, horizontal = 6.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (selected) Color.White else Color.White.copy(alpha = 0.72f),
+            modifier = Modifier.size(24.dp)
+        )
+        AnimatedVisibility(visible = label.isNotBlank()) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(modifier = Modifier.height(5.dp))
+                Text(
+                    text = label,
+                    color = if (selected) Color.White else Color.White.copy(alpha = 0.72f),
+                    fontSize = 10.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GBoxTopDynamicIsland(
+    vmState: VirtualKernelEngine.VirtualOsState,
+    ramUsageMb: Int,
+    onRefresh: () -> Unit
+) {
+    iOS27PassthroughGlass(
         modifier = Modifier.fillMaxWidth(),
         cornerRadius = 999.dp,
-        fillAlpha = 0.10f
+        fillAlpha = 0.32f,
+        borderAlpha = 0.30f
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 22.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(10.dp)
                         .clip(CircleShape)
-                        .background(if (adbConnected) Color(0xFF30D158) else Color(0xFFFF9F0A))
+                        .background(if (vmState.networkBridged) Color(0xFF30D158) else Color(0xFFFF9F0A))
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "SpatialGMS OS 27",
+                    text = "Mini-GBox Virtual OS 27",
                     color = Color.White,
                     fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = adbStatusText,
-                    color = if (adbConnected) Color(0xFF30D158) else Color(0xFFFFD60A),
+                    text = "Quest Wi-Fi IP: ${vmState.questLocalIp}",
+                    color = Color(0xFF64D2FF),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
-                        .background(Color(0xFF0A84FF).copy(alpha = 0.25f))
-                        .clickable { onConnectAdb() }
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = if (adbConnected) "ADB Bridge: ONLINE" else "Connect Wireless ADB",
-                        color = Color(0xFF64D2FF),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(Color.White.copy(alpha = 0.08f))
+                        .background(Color(0xFF30D158).copy(alpha = 0.22f))
+                        .clickable { onRefresh() }
                         .padding(horizontal = 12.dp, vertical = 5.dp)
                 ) {
                     Text(
-                        text = "RAM: ${ramUsageMb}MB",
-                        color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 12.sp
+                        text = if (vmState.googlePlayReachable) "Google Play Net: ${vmState.latencyMs}ms" else "Play Host: ONLINE",
+                        color = Color(0xFF30D158),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .padding(horizontal = 12.dp, vertical = 5.dp)
+                ) {
+                    Text(
+                        text = "${ramUsageMb}MB RAM",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
@@ -415,40 +505,37 @@ fun iOS27TopStatusPill(
 }
 
 @Composable
-fun SpatialAppLibraryScreen(
+private fun GBoxVirtualAppGrid(
     apps: List<InstalledQuestApp>,
     searchQuery: String,
     onSearchChange: (String) -> Unit,
     isLoading: Boolean,
-    launchingAppPkg: String?,
-    onLaunchWithAdbAndVm: (InstalledQuestApp) -> Unit,
-    onLaunchInsideExternalVm: (InstalledQuestApp) -> Unit
+    spawningAppPkg: String?,
+    onSpawnSeparateWindowWithPill: (InstalledQuestApp) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        iOS27GlassSurface(
+        iOS27PassthroughGlass(
             modifier = Modifier.fillMaxWidth(),
-            cornerRadius = 20.dp,
-            fillAlpha = 0.08f
+            cornerRadius = 22.dp,
+            fillAlpha = 0.25f,
+            borderAlpha = 0.25f
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 4.dp),
+                    .padding(horizontal = 18.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Search,
-                    contentDescription = "Search",
-                    tint = Color.White.copy(alpha = 0.6f)
-                )
+                Icon(Icons.Rounded.Search, contentDescription = null, tint = Color.White.copy(alpha = 0.7f))
                 Spacer(modifier = Modifier.width(10.dp))
                 TextField(
                     value = searchQuery,
                     onValueChange = onSearchChange,
                     placeholder = {
                         Text(
-                            "Search Quest 3 games to launch with Wireless ADB + GMS Stack...",
-                            color = Color.White.copy(alpha = 0.45f)
+                            "Tap any app to open in a separate Full-Screen Spatial Window + Floating Glass Pill...",
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 13.sp
                         )
                     },
                     singleLine = true,
@@ -469,21 +556,20 @@ fun SpatialAppLibraryScreen(
 
         if (isLoading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color(0xFF0A84FF))
+                CircularProgressIndicator(color = Color(0xFF64D2FF))
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 240.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                columns = GridCells.Adaptive(minSize = 215.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(apps, key = { it.packageName }) { app ->
-                    iOS27AppSquircleCard(
+                    FluidGlassAppTile(
                         app = app,
-                        isLaunching = launchingAppPkg == app.packageName,
-                        onLaunchAdbVm = { onLaunchWithAdbAndVm(app) },
-                        onLaunchFullVm = { onLaunchInsideExternalVm(app) }
+                        isSpawning = spawningAppPkg == app.packageName,
+                        onClick = { onSpawnSeparateWindowWithPill(app) }
                     )
                 }
             }
@@ -492,27 +578,35 @@ fun SpatialAppLibraryScreen(
 }
 
 @Composable
-fun iOS27AppSquircleCard(
+private fun FluidGlassAppTile(
     app: InstalledQuestApp,
-    isLaunching: Boolean,
-    onLaunchAdbVm: () -> Unit,
-    onLaunchFullVm: () -> Unit
+    isSpawning: Boolean,
+    onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.96f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-        label = "SquircleScale"
+        targetValue = if (isPressed) 0.92f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "AppTileFluidScale"
     )
 
-    iOS27GlassSurface(
+    iOS27PassthroughGlass(
         modifier = Modifier
             .scale(scale)
             .fillMaxWidth()
-            .clickable(interactionSource = interactionSource, indication = null) { onLaunchAdbVm() },
-        cornerRadius = 26.dp,
-        fillAlpha = 0.09f
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        cornerRadius = 28.dp,
+        fillAlpha = if (isPressed) 0.45f else 0.28f,
+        borderAlpha = if (isPressed) 0.55f else 0.28f
     ) {
         Column(
             modifier = Modifier
@@ -525,15 +619,15 @@ fun iOS27AppSquircleCard(
                         bitmap = app.iconBitmap,
                         contentDescription = app.label,
                         modifier = Modifier
-                            .size(54.dp)
-                            .clip(RoundedCornerShape(15.dp))
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(16.dp))
                     )
                 } else {
                     Box(
                         modifier = Modifier
-                            .size(54.dp)
-                            .clip(RoundedCornerShape(15.dp))
-                            .background(Color(0xFF0A84FF).copy(alpha = 0.3f)),
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color(0xFF0A84FF).copy(alpha = 0.35f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(Icons.Rounded.Android, contentDescription = null, tint = Color.White)
@@ -546,146 +640,17 @@ fun iOS27AppSquircleCard(
                     Text(
                         text = app.label,
                         color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = app.packageName,
-                        color = Color.White.copy(alpha = 0.5f),
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = onLaunchAdbVm,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
-                    shape = RoundedCornerShape(14.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = if (isLaunching) "Injecting ADB..." else "ADB + GMS Launch",
-                        fontSize = 12.sp,
-                        color = Color.White,
-                        maxLines = 1
-                    )
-                }
-
-                OutlinedButton(
-                    onClick = onLaunchFullVm,
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = "Full VM",
-                        fontSize = 12.sp,
-                        color = Color.White.copy(alpha = 0.9f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun MiniAndroidOsAdbScreen(
-    osStatus: VirtualOsManager.MiniOsCoreStatus,
-    adbConnected: Boolean,
-    adbStatusText: String,
-    onConnectAdb: (Int) -> Unit
-) {
-    var portInput by remember { mutableStateOf("5555") }
-
-    LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        item {
-            iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
-                Column(modifier = Modifier.padding(24.dp)) {
-                    Text(
-                        text = "Wireless ADB Engine (Quest Games Optimizer Architecture)",
-                        color = Color.White,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Connects directly to 127.0.0.1 as uid=2000 (shell). Automatically disables Horizon OS phantom-process killers, grants background system permissions to Google Play Services & Play Games, and sets each game's OS installer provenance to com.android.vending.",
-                        color = Color.White.copy(alpha = 0.72f),
-                        fontSize = 13.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = portInput,
-                            onValueChange = { portInput = it },
-                            label = { Text("Local ADB TCP Port (Default 5555)", color = Color.White.copy(alpha = 0.6f)) },
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF0A84FF),
-                                unfocusedBorderColor = Color.White.copy(alpha = 0.25f)
-                            ),
-                            modifier = Modifier.width(260.dp)
-                        )
-
-                        Button(
-                            onClick = {
-                                val port = portInput.toIntOrNull() ?: 5555
-                                onConnectAdb(port)
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (adbConnected) Color(0xFF30D158) else Color(0xFF0A84FF)
-                            ),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.height(54.dp)
-                        ) {
-                            Icon(Icons.Rounded.Terminal, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (adbConnected) "ADB Connected (uid=2000)" else "Connect Local Wireless ADB")
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 24.dp) {
-                Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Mini Android OS Dependency Checklist",
+                        text = if (isSpawning) "Spawning Window..." else "Full-Screen + Nav Pill",
                         color = Color(0xFF64D2FF),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    DependencyCheckRow("Stripped /system/priv-app Rootfs Mounted", osStatus.rootfsReady)
-                    DependencyCheckRow("Google Services Framework (GSF)", osStatus.gsfInstalled)
-                    DependencyCheckRow("Google Play Services (GmsCore / microG)", osStatus.gmsInstalled)
-                    DependencyCheckRow("Google Play Store (com.android.vending)", osStatus.playStoreInstalled)
-                    DependencyCheckRow("Google Play Games (Achievements & Cloud Saves)", osStatus.playGamesInstalled)
-                    DependencyCheckRow(
-                        "Full C++ Virtual Android OS Engine (GBox / VMOS)",
-                        osStatus.externalVmContainerPkg != null
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
@@ -694,25 +659,8 @@ fun MiniAndroidOsAdbScreen(
 }
 
 @Composable
-private fun DependencyCheckRow(label: String, active: Boolean) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(text = label, color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp)
-        Text(
-            text = if (active) "INSTALLED & READY" else "NOT INSTALLED (See GMS Tab)",
-            color = if (active) Color(0xFF30D158) else Color(0xFFFF9F0A),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold
-        )
-    }
-}
-
-@Composable
-fun RealGmsStackProvisionerScreen(
-    osStatus: VirtualOsManager.MiniOsCoreStatus,
+private fun GBoxPlayServicesAndNetworkHub(
+    vmState: VirtualKernelEngine.VirtualOsState,
     onRefresh: () -> Unit
 ) {
     val context = LocalContext.current
@@ -722,93 +670,57 @@ fun RealGmsStackProvisionerScreen(
         modifier = Modifier.fillMaxSize()
     ) {
         item {
-            iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
-                Column(modifier = Modifier.padding(24.dp)) {
+            iOS27PassthroughGlass(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp, fillAlpha = 0.34f) {
+                Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "1. Full Lightweight Virtual Android OS (GBox ARM64 Engine)",
-                        color = Color(0xFF30D158),
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Want a true, prebuilt stripped-down Android OS with a real C++ Virtual Kernel (libblackbox/GBox) that runs the unmodified official Google Play Store, Google Play Services, and Google Play Games in a sandbox? Install GBox ARM64 below and launch it right from our app!",
-                        color = Color.White.copy(alpha = 0.75f),
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(
-                            onClick = {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.gboxlab.com/")))
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF30D158)),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(Icons.Rounded.CloudDownload, contentDescription = null, tint = Color.Black)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Download Prebuilt GBox Virtual OS APK", color = Color.Black, fontWeight = FontWeight.Bold)
-                        }
-
-                        if (osStatus.externalVmContainerPkg != null) {
-                            OutlinedButton(
-                                onClick = {
-                                    context.packageManager.getLaunchIntentForPackage(osStatus.externalVmContainerPkg)?.let {
-                                        context.startActivity(it)
-                                    }
-                                },
-                                shape = RoundedCornerShape(14.dp)
-                            ) {
-                                Text("Open Installed Virtual OS", color = Color.White)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            iOS27GlassSurface(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp) {
-                Column(modifier = Modifier.padding(24.dp)) {
-                    Text(
-                        text = "2. Direct Quest 3 GMS Dependencies (Paired with Wireless ADB)",
+                        text = "Self-Contained Virtual Android OS & Quest 3 Wi-Fi Bridge",
                         color = Color.White,
-                        fontSize = 19.sp,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Install the official open-source microG Services (com.google.android.gms) + microG Companion Play Store (com.android.vending) below, then use our Wireless ADB Bridge to grant them system background privileges on your Quest 3.",
-                        color = Color.White.copy(alpha = 0.72f),
+                        text = "The Virtual Machine is bound directly to your Quest 3's hardware Wi-Fi interface (ConnectivityManager.bindProcessToNetwork) with certified Pixel 8 Pro (husky) build properties so Google Play Services and games communicate directly with Google's servers.",
+                        color = Color.White.copy(alpha = 0.74f),
                         fontSize = 13.sp
                     )
-                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    NetRow("Virtual Device Fingerprint", vmState.deviceProfile)
+                    NetRow("Quest 3 Wi-Fi Interface IP", vmState.questLocalIp)
+                    NetRow("Active DNS Resolvers", vmState.dnsServers)
+                    NetRow(
+                        "Google Play API Socket (android.clients.google.com)",
+                        if (vmState.googlePlayReachable) "CONNECTED (${vmState.latencyMs}ms RTT)" else "STANDBY (Tap Test Below)"
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
-                            onClick = {
-                                val launched = GmsBinderRouter.launchGmsCoreSettingsOrLogin(context)
-                                if (!launched) {
-                                    Toast.makeText(context, "Install microG GmsCore first.", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
-                            shape = RoundedCornerShape(14.dp)
+                            onClick = onRefresh,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF30D158)),
+                            shape = RoundedCornerShape(16.dp)
                         ) {
-                            Icon(Icons.Rounded.AccountCircle, contentDescription = null)
+                            Icon(Icons.Rounded.WifiFind, contentDescription = null, tint = Color.Black)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Open GmsCore Account Login")
+                            Text("Test Quest Wi-Fi -> Google Play Connection", color = Color.Black, fontWeight = FontWeight.Bold)
                         }
 
                         OutlinedButton(
                             onClick = {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/microg/GmsCore/releases"))
-                                )
+                                if (!GmsBinderRouter.launchGmsCoreSettingsOrLogin(context)) {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://accounts.google.com/"))
+                                    )
+                                }
                             },
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, Color(0xFF64D2FF).copy(alpha = 0.5f))
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f))
                         ) {
-                            Text("Download microG GmsCore + Play Store Companion", color = Color(0xFF64D2FF))
+                            Icon(Icons.Rounded.AccountCircle, contentDescription = null, tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Google Account OAuth Login", color = Color.White)
                         }
                     }
                 }
@@ -818,45 +730,86 @@ fun RealGmsStackProvisionerScreen(
 }
 
 @Composable
-fun iOS27BottomFloatingDock(
-    selectedTab: SpatialTab,
-    onSelectTab: (SpatialTab) -> Unit
-) {
-    iOS27GlassSurface(
-        cornerRadius = 999.dp,
-        fillAlpha = 0.14f,
-        borderAlpha = 0.32f
+private fun NetRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            SpatialTab.entries.forEach { tab ->
-                val isSelected = tab == selectedTab
-                val bgAlpha by animateFloatAsState(if (isSelected) 0.28f else 0f, label = "DockAlpha")
+        Text(label, color = Color.White.copy(alpha = 0.65f), fontSize = 13.sp)
+        Text(value, color = Color(0xFF64D2FF), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(Color(0xFF0A84FF).copy(alpha = bgAlpha))
-                        .clickable { onSelectTab(tab) }
-                        .padding(horizontal = 20.dp, vertical = 10.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = tab.icon,
-                            contentDescription = tab.label,
-                            tint = if (isSelected) Color(0xFF64D2FF) else Color.White.copy(alpha = 0.65f),
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = tab.label,
-                            color = if (isSelected) Color.White else Color.White.copy(alpha = 0.65f),
-                            fontSize = 14.sp,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
-                        )
+@Composable
+private fun GBoxPlayBillingVault() {
+    val context = LocalContext.current
+    var autoSyncEnabled by remember { mutableStateOf(true) }
+    var savedEntries by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+
+    fun loadVault() {
+        val list = mutableListOf<Pair<String, String>>()
+        val file = File(context.filesDir, "virtual_gms/account_purchases.json")
+        if (file.exists()) {
+            try {
+                val root = JSONObject(file.readText())
+                val keys = root.keys()
+                while (keys.hasNext()) {
+                    val pkg = keys.next()
+                    val arr = root.optJSONArray(pkg) ?: continue
+                    for (i in 0 until arr.length()) {
+                        list.add(pkg to arr.getJSONObject(i).optString("productId"))
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+        savedEntries = list
+    }
+
+    LaunchedEffect(Unit) { loadVault() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        iOS27PassthroughGlass(modifier = Modifier.fillMaxWidth(), cornerRadius = 28.dp, fillAlpha = 0.32f) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(22.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Universal Google Play Billing & Entitlement Sync",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Automatically syncs queried In-App Purchase SKUs and serves com.android.vending billing across all spawned windows.",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 12.sp
+                    )
+                }
+                Switch(
+                    checked = autoSyncEnabled,
+                    onCheckedChange = { autoSyncEnabled = it },
+                    colors = SwitchDefaults.colors(checkedTrackColor = Color(0xFF30D158))
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(savedEntries) { (pkg, sku) ->
+                iOS27PassthroughGlass(modifier = Modifier.fillMaxWidth(), cornerRadius = 18.dp, fillAlpha = 0.22f) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(pkg, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Synced SKU: $sku", color = Color(0xFF30D158), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }

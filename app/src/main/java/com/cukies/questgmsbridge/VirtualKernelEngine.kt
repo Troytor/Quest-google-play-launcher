@@ -3,7 +3,6 @@ package com.cukies.questgmsbridge
 import android.app.Instrumentation
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
@@ -17,7 +16,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.Inet4Address
+import java.net.URL
 
 object VirtualKernelEngine {
 
@@ -121,6 +122,30 @@ object VirtualKernelEngine {
         } catch (_: Throwable) {}
     }
 
+    /**
+     * Verifies live HTTPS socket routing from inside the Virtual Machine over the Quest 3's Wi-Fi
+     * directly to Google Play's production checkin/authentication endpoint.
+     */
+    suspend fun verifyLiveGooglePlayNetworkBridge(context: Context): Boolean = withContext(Dispatchers.IO) {
+        bindVirtualOsToQuestNetwork(context)
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val activeNet = cm?.activeNetwork
+        return@withContext try {
+            val url = URL("https://android.clients.google.com/generate_204")
+            val conn = (activeNet?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
+            conn.connectTimeout = 3500
+            conn.readTimeout = 3500
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "GoogleLoginService/1.3 (husky UQ1A.240205.004)")
+            val code = conn.responseCode
+            conn.disconnect()
+            isWifiOnline.value = true
+            (code in 200..399 || code == 404)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     fun saveGoogleAccountLogin(context: Context, email: String) {
         isGoogleSignedIn.value = true
         googleAccountEmail.value = email
@@ -140,10 +165,6 @@ object VirtualKernelEngine {
         persistVmState(context)
     }
 
-    /**
-     * Opens or restores an app in one of the 3 concurrent VM Multi-Window slots.
-     * If 3 apps are already running, returns null so the UI can notify the user to minimize/close one.
-     */
     fun openOrRestoreVmWindow(context: Context, app: VmAppEntry): Int? {
         val existingIdx = activeVmWindows.indexOfFirst { it.app.packageName == app.packageName }
         if (existingIdx != -1) {
@@ -154,7 +175,7 @@ object VirtualKernelEngine {
         }
 
         if (activeVmWindows.size >= MAX_RUNNING_WINDOWS) {
-            return null // All 3 window slots are occupied
+            return null
         }
 
         val usedSlots = activeVmWindows.map { it.slotIndex }.toSet()

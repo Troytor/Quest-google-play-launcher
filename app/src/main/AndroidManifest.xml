@@ -2,15 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Direct Quest 3 Wi-Fi & Network Bridge Permissions for the Virtual Machine -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
@@ -33,7 +30,7 @@
         android:hardwareAccelerated="true"
         android:largeHeap="true"
         android:usesCleartextTraffic="true"
-        android:label="GBox Spatial OS 27"
+        android:label="GBox Android VM"
         android:supportsRtl="true"
         android:theme="@style/Theme.SpatialGlassOS27">
 
@@ -41,7 +38,7 @@
             android:name="com.google.android.gms.version"
             android:value="243635000" />
 
-        <!-- Mini-GBox Translucent Passthrough Spatial Hub -->
+        <!-- Pure GBox VM Home Screen & Built-In Play Store Window -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -49,10 +46,10 @@
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
             android:resizeableActivity="true">
             <layout
-                android:defaultWidth="1180dp"
-                android:defaultHeight="780dp"
-                android:minWidth="720dp"
-                android:minHeight="480dp" />
+                android:defaultWidth="1240dp"
+                android:defaultHeight="800dp"
+                android:minWidth="800dp"
+                android:minHeight="520dp" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -60,36 +57,30 @@
             </intent-filter>
         </activity>
 
-        <!-- Separate Full-Screen Spatial Window + Floating iOS 27 Fluid Glass Pill -->
+        <!-- VM Multi-Window Slot 1 (Separate Fullscreen Spatial Window) -->
         <activity
             android:name=".ProxySandboxActivity"
+            android:process=":vm_slot0"
             android:exported="true"
             android:documentLaunchMode="always"
-            android:launchMode="standard"
+            android:launchMode="singleInstancePerTask"
             android:hardwareAccelerated="true"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
             android:resizeableActivity="true">
             <layout
-                android:defaultWidth="1600dp"
-                android:defaultHeight="960dp"
+                android:defaultWidth="1560dp"
+                android:defaultHeight="940dp"
                 android:minWidth="960dp"
                 android:minHeight="600dp" />
         </activity>
 
-        <!-- Translucent iOS 27 Google Play In-App Purchase Sheet -->
+        <!-- Legacy Billing Sheet compatibility -->
         <activity
             android:name=".BillingPurchaseSheetActivity"
             android:exported="true"
-            android:theme="@style/Theme.SpatialGlassOS27"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|density"
-            android:resizeableActivity="true">
-            <intent-filter>
-                <action android:name="com.android.vending.billing.PURCHASE" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.SpatialGlassOS27" />
 
-        <!-- Background Virtual OS Server & Google Play Services Daemon (:gms_daemon) -->
+        <!-- Background Virtual Android OS & Google Play Services Daemon -->
         <service
             android:name=".GmsDaemonService"
             android:exported="true"
@@ -97,13 +88,12 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="gbox_virtual_os_and_network_daemon" />
+                android:value="gbox_virtual_os_daemon" />
             <intent-filter>
                 <action android:name="com.android.vending.billing.InAppBillingService.BIND" />
                 <action android:name="com.android.vending.licensing.ILicensingService" />
                 <action android:name="com.google.android.gms.auth.service.START" />
                 <action android:name="com.google.android.gms.games.service.START" />
-                <action android:name="com.google.android.gms.chimera.container.CONTAINER_UPDATED" />
             </intent-filter>
         </service>
 

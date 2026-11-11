@@ -28,6 +28,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -58,9 +59,11 @@ class ProxySandboxActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.setBackgroundDrawableResource(android.R.color.transparent)
 
+        val slotIndex = intent.getIntExtra("VM_SLOT_INDEX", 0)
         val guestPkg = intent.getStringExtra("GUEST_PKG") ?: ""
+        val guestLabel = intent.getStringExtra("GUEST_LABEL") ?: guestPkg
         val guestApk = intent.getStringExtra("GUEST_APK") ?: ""
-        val autoLaunch = intent.getBooleanExtra("AUTO_LAUNCH", true)
+        val iconColorHex = intent.getLongExtra("ICON_COLOR", 0xFF0A84FF)
 
         try {
             val svcIntent = Intent(this, GmsDaemonService::class.java)
@@ -72,7 +75,10 @@ class ProxySandboxActivity : ComponentActivity() {
             bindService(svcIntent, daemonConnection, Context.BIND_AUTO_CREATE)
         } catch (_: Throwable) {}
 
-        val plugin = VirtualApkEngine.loadPluginApk(this, guestApk, guestPkg)
+        val plugin = if (guestApk.isNotBlank()) {
+            VirtualApkEngine.loadPluginApk(this, guestApk, guestPkg)
+        } else null
+
         val iconBitmap = try {
             packageManager.getApplicationIcon(guestPkg).toBitmapSafe(128, 128)?.asImageBitmap()
         } catch (_: Throwable) {
@@ -81,56 +87,41 @@ class ProxySandboxActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                SpatialFullscreenWindowWithFluidPill(
-                    plugin = plugin,
+                VmMultiWindowStage(
+                    slotIndex = slotIndex,
+                    packageName = guestPkg,
+                    appLabel = plugin?.appLabel ?: guestLabel,
                     iconBitmap = iconBitmap,
-                    autoLaunch = autoLaunch,
-                    onSpawnAdjacentFullscreenWindow = { spawnSeparateNativeQuestWindow(guestPkg) },
-                    onOpenInAppPurchaseOverlay = {
-                        val sheetIntent = Intent(this, BillingPurchaseSheetActivity::class.java).apply {
-                            putExtra("REQUESTED_PKG", guestPkg)
-                            putExtra("REQUESTED_SKU", "full_unlock_entitlement")
-                            putExtra("ITEM_TYPE", "inapp")
-                        }
-                        startActivity(sheetIntent)
+                    iconColor = Color(iconColorHex),
+                    onLaunchNativeSurface = { launchAdjacentRealSurface(guestPkg) },
+                    onMinimizeToFluidDock = {
+                        VirtualKernelEngine.minimizeWindowToFluidDock(guestPkg)
+                        finish()
                     },
-                    onOpenGmsCoreAuth = {
-                        if (!GmsBinderRouter.launchGmsCoreSettingsOrLogin(this)) {
-                            Toast.makeText(this, "Open GBox GMS Core tab to configure OAuth", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onCloseSpatialSession = { finish() }
+                    onTerminateSlot = {
+                        VirtualKernelEngine.closeVmWindowSlot(guestPkg)
+                        finish()
+                    }
                 )
             }
         }
     }
 
-    private fun spawnSeparateNativeQuestWindow(pkgName: String) {
+    private fun launchAdjacentRealSurface(pkgName: String) {
         try {
-            // Ensure Virtual Machine is bound to Quest 3 Wi-Fi before spawning the app window
             VirtualKernelEngine.bindVirtualOsToQuestNetwork(this)
-
             val pm = packageManager
-            val baseIntent = pm.getLaunchIntentForPackage(pkgName) ?: run {
-                val pkgInfo = pm.getPackageInfo(pkgName, android.content.pm.PackageManager.GET_ACTIVITIES)
-                val firstAct = pkgInfo.activities?.firstOrNull { it.exported } ?: pkgInfo.activities?.firstOrNull()
-                if (firstAct != null) {
-                    Intent().apply { component = ComponentName(pkgName, firstAct.name) }
-                } else null
-            }
-
-            if (baseIntent != null) {
-                baseIntent.addFlags(
+            val launchIntent = pm.getLaunchIntentForPackage(pkgName)
+            if (launchIntent != null) {
+                launchIntent.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or
                     Intent.FLAG_ACTIVITY_MULTIPLE_TASK
                 )
-                startActivity(baseIntent)
-            } else {
-                Toast.makeText(this, "No launchable window found for $pkgName", Toast.LENGTH_SHORT).show()
+                startActivity(launchIntent)
             }
         } catch (t: Throwable) {
-            Toast.makeText(this, "Window spawn error: ${t.localizedMessage}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Surface handoff: ${t.localizedMessage}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -143,62 +134,70 @@ class ProxySandboxActivity : ComponentActivity() {
 }
 
 @Composable
-private fun SpatialFullscreenWindowWithFluidPill(
-    plugin: VirtualApkEngine.LoadedPlugin?,
+private fun VmMultiWindowStage(
+    slotIndex: Int,
+    packageName: String,
+    appLabel: String,
     iconBitmap: ImageBitmap?,
-    autoLaunch: Boolean,
-    onSpawnAdjacentFullscreenWindow: () -> Unit,
-    onOpenInAppPurchaseOverlay: () -> Unit,
-    onOpenGmsCoreAuth: () -> Unit,
-    onCloseSpatialSession: () -> Unit
+    iconColor: Color,
+    onLaunchNativeSurface: () -> Unit,
+    onMinimizeToFluidDock: () -> Unit,
+    onTerminateSlot: () -> Unit
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
-
     var pillExpanded by remember { mutableStateOf(true) }
-    var activeFluidAction by remember { mutableStateOf("WINDOW") }
-    var vmState by remember { mutableStateOf(VirtualKernelEngine.currentNetworkState) }
-    var statusBannerText by remember {
-        mutableStateOf("VM Network Bridged (${vmState.questLocalIp}) • Play Services Online")
-    }
+    var isMinimizing by remember { mutableStateOf(false) }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "FluidPillPulse")
-    val glowPhase by infiniteTransition.animateFloat(
+    // Fluid Minimize-to-Dock Spring Animation
+    val windowScale by animateFloatAsState(
+        targetValue = if (isMinimizing) 0.22f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "WindowMinimizeScale"
+    )
+    val windowAlpha by animateFloatAsState(
+        targetValue = if (isMinimizing) 0.0f else 1.0f,
+        animationSpec = tween(260),
+        label = "WindowMinimizeAlpha"
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "FluidWindowGlow")
+    val shimmer by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(4200, easing = FastOutSlowInEasing),
+            animation = tween(4000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "glowPhase"
+        label = "shimmer"
     )
 
     LaunchedEffect(Unit) {
-        vmState = VirtualKernelEngine.verifyLiveGooglePlayNetworkBridge(context)
-        statusBannerText = "Quest Wi-Fi Bridged (${vmState.questLocalIp}) • Google Play RTT: ${vmState.latencyMs}ms"
-        if (autoLaunch && plugin != null) {
-            delay(280)
-            onSpawnAdjacentFullscreenWindow()
-        }
+        delay(240)
+        onLaunchNativeSurface()
     }
 
     Row(
         modifier = Modifier
             .fillMaxSize()
+            .scale(windowScale)
+            .alpha(windowAlpha)
             .background(Color.Transparent)
-            .padding(24.dp),
+            .padding(22.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // =========================================================================
-        // 1. FLOATING iOS 27 FLUID GLASS NAVIGATION PILL (DOCKED NEXT TO WINDOW)
+        // 1. FLOATING iOS 27 FLUID GLASS NAVIGATION PILL NEXT TO THE APP WINDOW
         // =========================================================================
         val pillWidth by animateDpAsState(
-            targetValue = if (pillExpanded) 96.dp else 68.dp,
+            targetValue = if (pillExpanded) 96.dp else 66.dp,
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioLowBouncy,
                 stiffness = Spring.StiffnessMediumLow
             ),
-            label = "PillWidth"
+            label = "FluidPillWidth"
         )
 
         Box(
@@ -209,8 +208,8 @@ private fun SpatialFullscreenWindowWithFluidPill(
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFF141B2D).copy(alpha = 0.58f),
-                            Color(0xFF0A0E18).copy(alpha = 0.68f)
+                            Color(0xFF161F33).copy(alpha = 0.56f),
+                            Color(0xFF0B101B).copy(alpha = 0.68f)
                         )
                     )
                 )
@@ -218,9 +217,9 @@ private fun SpatialFullscreenWindowWithFluidPill(
                     width = 1.5.dp,
                     brush = Brush.verticalGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.45f + 0.15f * glowPhase),
-                            Color(0xFF64D2FF).copy(alpha = 0.25f),
-                            Color.White.copy(alpha = 0.08f)
+                            Color.White.copy(alpha = 0.48f + 0.15f * shimmer),
+                            Color(0xFF64D2FF).copy(alpha = 0.28f),
+                            Color.White.copy(alpha = 0.10f)
                         )
                     ),
                     shape = RoundedCornerShape(999.dp)
@@ -232,92 +231,71 @@ private fun SpatialFullscreenWindowWithFluidPill(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                FluidNavButton(
-                    icon = if (pillExpanded) Icons.Rounded.LensBlur else Icons.Rounded.MenuOpen,
-                    label = if (pillExpanded) "Fluid" else "",
-                    isActive = true,
-                    accentColor = Color(0xFF64D2FF),
+                FluidPillButton(
+                    icon = if (pillExpanded) Icons.Rounded.AutoAwesomeMosaic else Icons.Rounded.ChevronRight,
+                    label = if (pillExpanded) "Slot ${slotIndex + 1}/3" else "",
+                    tint = Color(0xFF64D2FF),
                     onClick = { pillExpanded = !pillExpanded }
                 )
 
-                Divider(
-                    color = Color.White.copy(alpha = 0.14f),
-                    modifier = Modifier
-                        .width(38.dp)
-                        .clip(CircleShape)
-                )
+                Divider(color = Color.White.copy(alpha = 0.15f), modifier = Modifier.width(36.dp))
 
-                FluidNavButton(
+                // Back Button
+                FluidPillButton(
                     icon = Icons.Rounded.ArrowBackIosNew,
                     label = if (pillExpanded) "Back" else "",
-                    isActive = activeFluidAction == "BACK",
-                    accentColor = Color.White,
+                    tint = Color.White,
                     onClick = {
-                        activeFluidAction = "BACK"
                         scope.launch {
                             VirtualKernelEngine.dispatchVirtualKeyEvent(KeyEvent.KEYCODE_BACK)
-                            statusBannerText = "Dispatched Virtual KeyEvent (KEYCODE_BACK)"
                         }
                     }
                 )
 
-                FluidNavButton(
-                    icon = Icons.Rounded.OpenInNew,
-                    label = if (pillExpanded) "Window" else "",
-                    isActive = activeFluidAction == "WINDOW",
-                    accentColor = Color(0xFF0A84FF),
+                // Minimize to Fluid Dock Button
+                FluidPillButton(
+                    icon = Icons.Rounded.Minimize,
+                    label = if (pillExpanded) "Minimize" else "",
+                    tint = Color(0xFFFFD60A),
                     onClick = {
-                        activeFluidAction = "WINDOW"
-                        statusBannerText = "Spawning Separate Fullscreen Window..."
-                        onSpawnAdjacentFullscreenWindow()
+                        scope.launch {
+                            isMinimizing = true
+                            delay(240)
+                            onMinimizeToFluidDock()
+                        }
                     }
                 )
 
-                FluidNavButton(
-                    icon = Icons.Rounded.ShoppingBag,
-                    label = if (pillExpanded) "Play IAP" else "",
-                    isActive = activeFluidAction == "IAP",
-                    accentColor = Color(0xFF30D158),
+                // Pop-Out Fullscreen Native Surface
+                FluidPillButton(
+                    icon = Icons.Rounded.OpenInFull,
+                    label = if (pillExpanded) "Fullscreen" else "",
+                    tint = Color(0xFF30D158),
+                    onClick = onLaunchNativeSurface
+                )
+
+                Divider(color = Color.White.copy(alpha = 0.15f), modifier = Modifier.width(36.dp))
+
+                // Close Window & Free Slot
+                FluidPillButton(
+                    icon = Icons.Rounded.Close,
+                    label = if (pillExpanded) "Close" else "",
+                    tint = Color(0xFFFF453A),
                     onClick = {
-                        activeFluidAction = "IAP"
-                        statusBannerText = "Opening Google Play Billing Entitlement Sheet..."
-                        onOpenInAppPurchaseOverlay()
+                        scope.launch {
+                            isMinimizing = true
+                            delay(200)
+                            onTerminateSlot()
+                        }
                     }
-                )
-
-                FluidNavButton(
-                    icon = Icons.Rounded.AccountCircle,
-                    label = if (pillExpanded) "Account" else "",
-                    isActive = activeFluidAction == "ACCOUNT",
-                    accentColor = Color(0xFFBF5AF2),
-                    onClick = {
-                        activeFluidAction = "ACCOUNT"
-                        statusBannerText = "Opening Google Account OAuth Bridge..."
-                        onOpenGmsCoreAuth()
-                    }
-                )
-
-                Divider(
-                    color = Color.White.copy(alpha = 0.14f),
-                    modifier = Modifier
-                        .width(38.dp)
-                        .clip(CircleShape)
-                )
-
-                FluidNavButton(
-                    icon = Icons.Rounded.PowerSettingsNew,
-                    label = if (pillExpanded) "Exit" else "",
-                    isActive = false,
-                    accentColor = Color(0xFFFF453A),
-                    onClick = onCloseSpatialSession
                 )
             }
         }
 
-        Spacer(modifier = Modifier.width(20.dp))
+        Spacer(modifier = Modifier.width(18.dp))
 
         // =========================================================================
-        // 2. TRANSLUCENT PASSTHROUGH SPATIAL COMPANION CANVAS (NEXT TO PILL)
+        // 2. TRANSLUCENT FULL-SCREEN VM APPLICATION VIEWPORT
         // =========================================================================
         Box(
             modifier = Modifier
@@ -327,237 +305,180 @@ private fun SpatialFullscreenWindowWithFluidPill(
                 .background(
                     Brush.linearGradient(
                         colors = listOf(
-                            Color(0xFF101626).copy(alpha = 0.52f),
+                            Color(0xFF121828).copy(alpha = 0.50f),
                             Color(0xFF090D16).copy(alpha = 0.62f)
                         )
                     )
                 )
                 .border(
-                    width = 1.5.dp,
+                    width = 1.4.dp,
                     brush = Brush.linearGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.38f),
-                            Color(0xFF0A84FF).copy(alpha = 0.18f),
-                            Color.White.copy(alpha = 0.05f)
+                            Color.White.copy(alpha = 0.42f),
+                            Color(0xFF64D2FF).copy(alpha = 0.20f),
+                            Color.White.copy(alpha = 0.06f)
                         )
                     ),
                     shape = RoundedCornerShape(38.dp)
                 )
                 .padding(32.dp)
         ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color(0xFF0A84FF).copy(alpha = 0.18f),
-                            Color.Transparent
-                        ),
-                        center = Offset(size.width * (0.25f + 0.1f * glowPhase), size.height * 0.2f),
-                        radius = size.width * 0.45f
-                    )
-                )
-            }
-
             Column(
                 modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.SpaceBetween,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Top Translucent Window Bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(Color.White.copy(alpha = 0.10f))
-                            .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .size(9.dp)
+                                .size(10.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFF30D158))
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = statusBannerText,
+                            text = "$appLabel • VM Window Slot ${slotIndex + 1} of 3",
                             color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(Color(0xFF0A84FF).copy(alpha = 0.20f))
-                            .padding(horizontal = 14.dp, vertical = 7.dp)
-                    ) {
-                        Text(
-                            text = vmState.deviceProfile,
-                            color = Color(0xFF64D2FF),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
+                    Text(
+                        text = "Google Play Services & Quest Wi-Fi Active (${VirtualKernelEngine.questWifiIp.value})",
+                        color = Color(0xFF64D2FF),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                // Center App Stage Card
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(Color.White.copy(alpha = 0.07f))
-                        .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(28.dp))
-                        .padding(26.dp)
+                        .clip(RoundedCornerShape(32.dp))
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(32.dp))
+                        .padding(horizontal = 48.dp, vertical = 36.dp)
                 ) {
                     if (iconBitmap != null) {
                         Image(
                             bitmap = iconBitmap,
-                            contentDescription = plugin?.appLabel,
+                            contentDescription = appLabel,
                             modifier = Modifier
-                                .size(82.dp)
-                                .clip(RoundedCornerShape(22.dp))
+                                .size(88.dp)
+                                .clip(RoundedCornerShape(24.dp))
                         )
                     } else {
                         Box(
                             modifier = Modifier
-                                .size(82.dp)
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(Color(0xFF0A84FF).copy(alpha = 0.3f)),
+                                .size(88.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(iconColor),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 Icons.Rounded.Apps,
                                 contentDescription = null,
                                 tint = Color.White,
-                                modifier = Modifier.size(42.dp)
+                                modifier = Modifier.size(46.dp)
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(22.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = plugin?.appLabel ?: "Sandboxed Application",
-                            color = Color.White,
-                            fontSize = 26.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = plugin?.packageName ?: "",
-                            color = Color(0xFF64D2FF),
-                            fontSize = 14.sp
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "Quest 3 Wi-Fi Bridge: ${vmState.questLocalIp} (DNS: ${vmState.dnsServers}) • ${plugin?.splitCount ?: 0} Split APKs • ${plugin?.extractedSoFiles?.size ?: 0} arm64 Libraries Mounted",
-                            color = Color.White.copy(alpha = 0.68f),
-                            fontSize = 13.sp
-                        )
+                    Text(
+                        text = appLabel,
+                        color = Color.White,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = packageName,
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Button(
+                            onClick = onLaunchNativeSurface,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier.height(50.dp)
+                        ) {
+                            Icon(Icons.Rounded.OpenInNew, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Focus Fullscreen Window", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    isMinimizing = true
+                                    delay(240)
+                                    onMinimizeToFluidDock()
+                                }
+                            },
+                            shape = RoundedCornerShape(18.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                            modifier = Modifier.height(50.dp)
+                        ) {
+                            Icon(Icons.Rounded.Minimize, contentDescription = null, tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Minimize to Fluid Dock", color = Color.White)
+                        }
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Button(
-                        onClick = onSpawnAdjacentFullscreenWindow,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A84FF)),
-                        shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier
-                            .weight(1.3f)
-                            .height(56.dp)
-                    ) {
-                        Icon(Icons.Rounded.OpenInFull, contentDescription = null)
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            "Open Separate Full-Screen Window",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = onOpenInAppPurchaseOverlay,
-                        shape = RoundedCornerShape(20.dp),
-                        border = BorderStroke(1.dp, Color(0xFF30D158).copy(alpha = 0.55f)),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp)
-                    ) {
-                        Icon(Icons.Rounded.VerifiedUser, contentDescription = null, tint = Color(0xFF30D158))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Sync Play Store Purchases", color = Color.White, fontWeight = FontWeight.SemiBold)
-                    }
-                }
+                Text(
+                    text = "Use the Floating Glass Pill on the left to go Back, Minimize to the VM Dock, or Close this slot.",
+                    color = Color.White.copy(alpha = 0.55f),
+                    fontSize = 12.sp
+                )
             }
         }
     }
 }
 
 @Composable
-private fun FluidNavButton(
+private fun FluidPillButton(
     icon: ImageVector,
     label: String,
-    isActive: Boolean,
-    accentColor: Color,
+    tint: Color,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
     val scale by animateFloatAsState(
-        targetValue = when {
-            isPressed -> 0.84f
-            isActive -> 1.08f
-            else -> 1.0f
-        },
+        targetValue = if (isPressed) 0.82f else 1.0f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioLowBouncy,
             stiffness = Spring.StiffnessMediumLow
         ),
-        label = "FluidNavButtonScale"
-    )
-
-    val bgAlpha by animateFloatAsState(
-        targetValue = if (isActive || isPressed) 0.28f else 0.08f,
-        animationSpec = tween(220),
-        label = "FluidNavButtonAlpha"
+        label = "FluidBtnScale"
     )
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .scale(scale)
-            .clip(RoundedCornerShape(24.dp))
-            .background(accentColor.copy(alpha = bgAlpha))
-            .border(
-                width = 1.dp,
-                color = if (isActive) accentColor.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.14f),
-                shape = RoundedCornerShape(24.dp)
-            )
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            )
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(tint.copy(alpha = if (isPressed) 0.28f else 0.10f))
+            .border(1.dp, tint.copy(alpha = if (isPressed) 0.6f else 0.22f), RoundedCornerShape(22.dp))
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = if (isActive) accentColor else Color.White.copy(alpha = 0.85f),
-            modifier = Modifier.size(22.dp)
-        )
+        Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
         AnimatedVisibility(visible = label.isNotBlank()) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -566,7 +487,8 @@ private fun FluidNavButton(
                     color = Color.White.copy(alpha = 0.9f),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = 1
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }

@@ -23,39 +23,38 @@ class BridgeApp : Application() {
         try {
             Reflection.unseal(base)
             GmsBinderRouter.installHooks(base)
-            Log.i(TAG, "SpatialGMS OS 27 Core initialized cleanly.")
         } catch (t: Throwable) {
-            Log.e(TAG, "Non-fatal reflection init warning", t)
+            Log.e(TAG, "Reflection init note", t)
         }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        // Boot the self-contained Virtual Android OS & bind directly to Quest 3 Wi-Fi
+        VirtualKernelEngine.bootVirtualAndroidOs(this)
     }
 
     private fun installCrashShield() {
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            Log.e(TAG, "Caught unhandled exception in thread ${thread.name}", throwable)
+            Log.e(TAG, "Caught unhandled exception in ${thread.name}", throwable)
             if (thread == Looper.getMainLooper().thread) {
                 try {
                     Handler(Looper.getMainLooper()).post {
                         Toast.makeText(
                             this,
-                            "Sandbox Shield Caught Error: ${throwable.javaClass.simpleName}",
-                            Toast.LENGTH_LONG
+                            "VM Shield: ${throwable.javaClass.simpleName}",
+                            Toast.LENGTH_SHORT
                         ).show()
                     }
-                    // Keep the main Looper alive if a sandboxed call throws an exception
                     while (true) {
                         try {
                             Looper.loop()
-                        } catch (e: Throwable) {
-                            Log.e(TAG, "Secondary loop shield caught: ${e.message}")
-                        }
+                        } catch (_: Throwable) {}
                     }
                 } catch (_: Throwable) {
                     defaultHandler?.uncaughtException(thread, throwable)
                 }
-            } else {
-                // Background thread exception: log and prevent process death
-                Log.w(TAG, "Suppressed background thread crash: ${throwable.message}")
             }
         }
     }
